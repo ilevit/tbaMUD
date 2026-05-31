@@ -97,6 +97,11 @@ foreach(FUNC gettimeofday select snprintf strcasecmp strdup strerror
     check_function_exists(${FUNC} HAVE_${_upper_name})
 endforeach()
 
+if (WIN32)
+    set(HAVE_VSNPRINTF 1)
+    set(HAVE_SNPRINTF 1)
+endif()
+
 if (NOT HAVE_VPRINTF)
     check_function_exists(_doprnt HAVE_DOPRNT)
 endif()
@@ -106,10 +111,14 @@ endif()
 check_type_size("pid_t" HAVE_PID_T)
 check_type_size("size_t" HAVE_SIZE_T)
 check_type_size("ssize_t" HAVE_SSIZE_T)
-set(CMAKE_EXTRA_INCLUDE_FILES "sys/socket.h")
-check_type_size("socklen_t" HAVE_SOCKLEN_T)
-unset(CMAKE_EXTRA_INCLUDE_FILES)
 
+if (WIN32)
+    set(CMAKE_REQUIRED_LIBRARIES ws2_32)
+    set(HAVE_SOCKLEN_T 1)
+#    check_symbol_exists(socklen_t "ws2tcipip.h" HAVE_SOCKLEN_T)
+else()
+    check_symbol_exists(socklen_t "sys/socket.h" HAVE_SOCKLEN_T)
+endif()
 
 if (NOT HAVE_PID_T)
     set(pid_t int)
@@ -123,8 +132,11 @@ if (NOT HAVE_SSIZE_T)
     set(ssize_t int)
 endif()
 
+# We set this as a variable for the cmakedefine in conf.h.cmake.in
 if (NOT HAVE_SOCKLEN_T)
     set(socklen_t int)
+else()
+    set(socklen_t "")
 endif()
 
 # ========== const ==========
@@ -183,7 +195,9 @@ else()
 endif()
 
 # ========== Struct checks ==========
-if (HAVE_NETINET_IN_H)
+if (WIN32)
+    set(HAVE_STRUCT_IN_ADDR 1)
+elseif (HAVE_NETINET_IN_H)
     check_struct_has_member("struct in_addr" s_addr netinet/in.h HAVE_STRUCT_IN_ADDR)
 endif()
 
@@ -286,9 +300,12 @@ else()
     message(FATAL_ERROR "Could not determine return value from signal handler.")
 endif()
 
-# ========== Define general UNIX-system ==========
+# ========== Define general UNIX/Windows system ==========
 if (UNIX)
     set(CIRCLE_UNIX 1)
+endif()
+if (WIN32)
+    set(CIRCLE_WINDOWS 1)
 endif()
 
 set(PROTO_FUNCTIONS
@@ -348,6 +365,34 @@ set(PROTO_FUNCTIONS
         socket
 )
 
+# ========== libuv check ==========
+find_package(PkgConfig QUIET)
+if (PKG_CONFIG_FOUND)
+    pkg_check_modules(LIBUV libuv>=1.0.0)
+endif()
+
+if (NOT LIBUV_FOUND)
+    find_path(LIBUV_INCLUDE_DIR NAMES uv.h)
+    find_library(LIBUV_LIBRARY NAMES uv libuv)
+
+    if (LIBUV_INCLUDE_DIR AND LIBUV_LIBRARY)
+        set(LIBUV_FOUND TRUE)
+        set(LIBUV_INCLUDE_DIRS ${LIBUV_INCLUDE_DIR})
+        set(LIBUV_LIBRARIES ${LIBUV_LIBRARY})
+    endif()
+endif()
+
+if (NOT LIBUV_FOUND)
+    message(FATAL_ERROR "libuv not found. Please install libuv and ensure it is in your search path, or set LIBUV_INCLUDE_DIR and LIBUV_LIBRARY manually.")
+endif()
+
+
+# ========== Generate conf.h ==========
+if (LIBUV_FOUND)
+    set(HAVE_LIBUV 1)
+endif()
+
+# We need a temporary conf.h to check for missing prototypes
 configure_file(
         ${CMAKE_SOURCE_DIR}/src/conf.h.cmake.in
         ${CMAKE_BINARY_DIR}/tmp_conf.h
@@ -378,19 +423,15 @@ int main() {
     endif()
 endmacro()
 
-
 foreach (FUNC ${PROTO_FUNCTIONS})
     check_function_prototype(${FUNC})
 endforeach()
 
-
-# ========== Generate conf.h ==========
+# Final generation of conf.h with all detected values including NEED_XXX_PROTO
 configure_file(
-        ${CMAKE_SOURCE_DIR}/src/conf.h.win
+        ${CMAKE_SOURCE_DIR}/src/conf.h.cmake.in
         ${CMAKE_BINARY_DIR}/conf.h
 )
-
-
 
 # ========== Source-filer ==========
 file(GLOB SRC_FILES src/*.c)
@@ -403,6 +444,10 @@ if (WIN32)
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--allow-multiple-definition")
     endif()
 endif()
+
+# Include libuv headers
+include_directories(${LIBUV_INCLUDE_DIRS})
+list(APPEND EXTRA_LIBS ${LIBUV_LIBRARIES})
 
 # ========== Bygg kjørbar ==========
 add_executable(circle ${SRC_FILES})

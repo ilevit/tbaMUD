@@ -32,7 +32,6 @@
 #  include <dir.h>
 # else /* MSVC */
 #  include <direct.h>
-#  include <winsock.h>
 # endif
 # include <mmsystem.h>
 #endif /* CIRCLE_WINDOWS */
@@ -105,6 +104,15 @@ ush_int port;
 socket_t mother_desc;
 int next_tick = SECS_PER_MUD_HOUR;  /* Tick countdown */
 
+/* libuv globals */
+uv_loop_t *loop;
+uv_tcp_t mother_handle;
+uv_timer_t heartbeat_timer;
+uv_signal_t sigint_handle;
+uv_signal_t sighup_handle;
+uv_signal_t sigterm_handle;
+uv_signal_t sigusr1_handle;
+uv_signal_t sigusr2_handle;
 
 /* static local global variable declarations (current file scope only) */
 static struct txt_block *bufpool = 0;  /* pool of large output buffers */
@@ -117,6 +125,14 @@ static byte emergency_unban;  /* signal: SIGUSR2 */
 static int dg_act_check;         /* toggle for act_trigger */
 static bool fCopyOver;          /* Are we booting in copyover mode? */
 static char *last_act_message = NULL;
+
+/* libuv callback prototypes */
+static void on_new_connection(uv_stream_t *server, int status);
+static void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf);
+static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf);
+static void on_write(uv_write_t *req, int status);
+static void heartbeat_cb(uv_timer_t *handle);
+static void on_signal(uv_signal_t *handle, int signum);
 
 /* static local function prototypes (current file scope only) */
 static RETSIGTYPE reread_wizlists(int sig);
@@ -171,9 +187,293 @@ static void msdp_update(void); /* KaVir plugin*/
 #define FD_CLR(x, y)
 #endif
 
+/* libuv callbacks */
+
+static void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
+{
+  *buf = uv_buf_init((char *)malloc(suggested_size), suggested_size);
+}
+
+static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf)
+{
+  struct descriptor_data *d = (struct descriptor_data *)client->data;
+
+  if (nread > 0) {
+    /* Find where to append in the buffer */
+    int current_len = strlen(d->inbuf);
+    
+    /* Limit nread to available space in d->inbuf */
+    if (current_len + nread >= MAX_RAW_INPUT_LENGTH) {
+      log("WARNING: input overflow on descriptor %d", d->desc_num);
+      nread = MAX_RAW_INPUT_LENGTH - current_len - 1;
+    }
+
+    if (nread > 0) {
+      char *append_point = d->inbuf + current_len;
+      
+      /* Since we have received atleast 1 byte of data from the socket, lets run it through
+       * ProtocolInput() and rip out anything that is Out Of Band.
+       * ProtocolInput appends to d->inbuf. 
+       * We pass d->inbuf as apOut, and it returns bytes added. */ 
+      ssize_t added = ProtocolInput(d, buf->base, nread, d->inbuf);
+      
+      /* Terminate the buffer at the new end point */
+      if (added >= 0) {
+        *(append_point + added) = '\0';
+      }
+    }
+  } else if (nread < 0) {
+    if (nread != UV_EOF)
+      log("Read error %s", uv_err_name(nread));
+    STATE(d) = CON_CLOSE;
+  }
+
+  if (buf->base)
+    free(buf->base);
+}
+
+static void on_reject_write(uv_write_t *req, int status)
+{
+  uv_stream_t *stream = req->handle;
+  uv_close((uv_handle_t *)stream, (uv_close_cb)free);
+  if (req->data)
+    free(req->data);
+  free(req);
+}
+
+static void on_new_connection(uv_stream_t *server, int status)
+{
+  if (status < 0) {
+    log("New connection error %s", uv_strerror(status));
+    return;
+  }
+
+  int sockets_connected = 0;
+  struct descriptor_data *d;
+  for (d = descriptor_list; d; d = d->next)
+    sockets_connected++;
+
+  struct descriptor_data *newd;
+  CREATE(newd, struct descriptor_data, 1);
+  
+  uv_tcp_init(loop, &newd->handle);
+  if (uv_accept(server, (uv_stream_t *)&newd->handle) == 0) {
+    newd->handle.data = newd;
+
+    /* Get the raw fd for legacy code compatibility */
+    uv_os_fd_t fd;
+    uv_fileno((const uv_handle_t *)&newd->handle, &fd);
+
+    if (sockets_connected >= CONFIG_MAX_PLAYING) {
+      const char *msg = "Sorry, the game is full right now... please try again later!\r\n";
+      uv_buf_t buf = uv_buf_init(strdup(msg), strlen(msg));
+      uv_write_t *req = (uv_write_t *)malloc(sizeof(uv_write_t));
+      req->data = buf.base;
+      uv_write(req, (uv_stream_t *)&newd->handle, &buf, 1, on_reject_write);
+      /* descriptor_data 'newd' was created but not used, free it */
+      free(newd);
+      return;
+    }
+
+    /* Initialize descriptor data */
+    struct sockaddr_storage peer;
+    int len = sizeof(peer);
+    uv_tcp_getpeername(&newd->handle, (struct sockaddr *)&peer, &len);
+    
+    if (peer.ss_family == AF_INET) {
+      struct sockaddr_in *s = (struct sockaddr_in *)&peer;
+      strncpy(newd->host, inet_ntoa(s->sin_addr), HOST_LENGTH);
+    } else {
+      strcpy(newd->host, "unknown");
+    }
+    newd->host[HOST_LENGTH] = '\0';
+
+    if (isbanned(newd->host) == BAN_ALL) {
+      log("Connection attempt denied from banned host %s", newd->host);
+      uv_close((uv_handle_t *)&newd->handle, (uv_close_cb)free);
+      return;
+    }
+
+    init_descriptor(newd, (socket_t)fd);
+    
+    newd->next = descriptor_list;
+    descriptor_list = newd;
+
+    uv_read_start((uv_stream_t *)&newd->handle, alloc_buffer, on_read);
+    
+    if (CONFIG_PROTOCOL_NEGOTIATION) {
+      NEW_EVENT(ePROTOCOLS, newd, NULL, 1.5 * PASSES_PER_SEC);
+      write_to_output(newd, "Attempting to Detect Client, Please Wait...\r\n");
+      ProtocolNegotiate(newd);
+    } else {
+      int greetsize = strlen(GREETINGS);
+      write_to_output(newd, "%s", ProtocolOutput(newd, GREETINGS, &greetsize));
+    }
+  } else {
+    uv_close((uv_handle_t *)&newd->handle, (uv_close_cb)free);
+  }
+}
+
+static void on_write(uv_write_t *req, int status)
+{
+  if (req->data)
+    free(req->data);
+  if (status) {
+    log("Write error %s", uv_strerror(status));
+  }
+  free(req);
+}
+
+static void on_descriptor_close(uv_handle_t *handle)
+{
+  struct descriptor_data *d = (struct descriptor_data *)handle->data;
+  free(d);
+}
+
+/* write_to_descriptor takes a descriptor, and text to write to the descriptor.
+ * It uses libuv to send the data asynchronously. Returns:
+ * >=0  If the write was successfully queued.
+ *  -1  If an error was encountered. */
+int write_to_descriptor(socket_t desc, const char *txt)
+{
+  struct descriptor_data *d;
+  size_t len = strlen(txt);
+
+  if (len == 0)
+    return 0;
+
+  for (d = descriptor_list; d; d = d->next) {
+    if (d->descriptor == desc) {
+      uv_buf_t buf = uv_buf_init(strdup(txt), len);
+      uv_write_t *req = (uv_write_t *)malloc(sizeof(uv_write_t));
+      req->data = buf.base;
+      if (uv_write(req, (uv_stream_t *)&d->handle, &buf, 1, on_write) != 0) {
+        free(buf.base);
+        free(req);
+        return -1;
+      }
+      return len;
+    }
+  }
+
+  return -1;
+}
+
+static ssize_t perform_socket_read(socket_t desc, char *read_point, size_t space_left)
+{
+  /* This is now handled by on_read callback in libuv refactor.
+   * We return -1 to signal that this path should not be used synchronously. */
+  return -1;
+}
+
+static void heartbeat_cb(uv_timer_t *handle)
+{
+  struct descriptor_data *d, *next_d;
+  char comm[MAX_INPUT_LENGTH];
+  int aliased;
+
+  /* 1. World update */
+  heartbeat(++pulse);
+
+  /* 2. Process commands (one per pulse per player) */
+  for (d = descriptor_list; d; d = next_d) {
+    next_d = d->next;
+
+    if (STATE(d) == CON_CLOSE || STATE(d) == CON_DISCONNECT) {
+      close_socket(d);
+      continue;
+    }
+
+    /* Input processing */
+    process_input(d);
+
+    if (d->character) {
+      GET_WAIT_STATE(d->character) -= (GET_WAIT_STATE(d->character) > 0);
+      if (GET_WAIT_STATE(d->character))
+        continue;
+    }
+
+    if (!get_from_q(&d->input, comm, &aliased))
+      continue;
+
+    if (d->character) {
+      d->character->char_specials.timer = 0;
+      if (STATE(d) == CON_PLAYING && GET_WAS_IN(d->character) != NOWHERE) {
+        if (IN_ROOM(d->character) != NOWHERE)
+          char_from_room(d->character);
+        char_to_room(d->character, GET_WAS_IN(d->character));
+        GET_WAS_IN(d->character) = NOWHERE;
+        act("$n has returned.", TRUE, d->character, 0, 0, TO_ROOM);
+      }
+      GET_WAIT_STATE(d->character) = 1;
+    }
+    d->has_prompt = FALSE;
+
+    if (d->showstr_count)
+      show_string(d, comm);
+    else if (d->str)
+      string_add(d, comm);
+    else if (STATE(d) != CON_PLAYING)
+      nanny(d, comm);
+    else {
+      if (aliased)
+        d->has_prompt = TRUE;
+      else if (perform_alias(d, comm, sizeof(comm)))
+        get_from_q(&d->input, comm, &aliased);
+      command_interpreter(d->character, comm);
+    }
+  }
+
+  /* 3. Output and Prompts */
+  for (d = descriptor_list; d; d = next_d) {
+    next_d = d->next;
+    
+    if (*(d->output)) {
+      if (process_output(d) < 0) {
+        close_socket(d);
+        continue;
+      }
+      d->has_prompt = 1;
+    }
+
+    if (!d->has_prompt) {
+      write_to_descriptor(d->descriptor, make_prompt(d));
+      d->has_prompt = TRUE;
+    }
+  }
+}
+
+static void on_signal(uv_signal_t *handle, int signum)
+{
+  switch (signum) {
+    case SIGINT:
+    case SIGTERM:
+      log("Received SIGINT/SIGTERM, shutting down...");
+      circle_shutdown = 1;
+      uv_stop(loop);
+      break;
+    case SIGHUP:
+      log("Received SIGHUP, rebooting...");
+      circle_shutdown = 1;
+      circle_reboot = 1;
+      uv_stop(loop);
+      break;
+#ifdef SIGUSR1
+    case SIGUSR1:
+      reread_wizlist = TRUE;
+      break;
+#endif
+#ifdef SIGUSR2
+    case SIGUSR2:
+      emergency_unban = TRUE;
+      break;
+#endif
+  }
+}
+
 /*  main game loop and related stuff */
 
-#if defined(CIRCLE_WINDOWS) || defined(CIRCLE_MACINTOSH)
+#ifdef NEED_GETTIMEOFDAY_PROTO
 /* Windows and Mac do not have gettimeofday, so we'll simulate it. Borland C++
  * warns: "Undefined structure 'timezone'" */
 void gettimeofday(struct timeval *t, struct timezone *dummy)
@@ -189,7 +489,7 @@ void gettimeofday(struct timeval *t, struct timezone *dummy)
   t->tv_usec = (millisec % 1000) * 1000;
 }
 
-#endif	/* CIRCLE_WINDOWS || CIRCLE_MACINTOSH */
+#endif	/* NEED_GETTIMEOFDAY_PROTO */
 
 int main(int argc, char **argv)
 {
@@ -494,7 +794,7 @@ void copyover_recover()
   fclose (fp);
 }
 
-/* Init sockets, run game, and cleanup sockets */
+/* Init libuv and game structures */
 static void init_game(ush_int local_port)
 {
   /* We don't want to restart if we crash before we get up. */
@@ -505,10 +805,32 @@ static void init_game(ush_int local_port)
   log("Finding player limit.");
   max_players = get_max_players();
 
+  /* Initialize libuv loop */
+  loop = uv_default_loop();
+
+  /* Set up signal handling */
+  uv_signal_init(loop, &sigint_handle);
+  uv_signal_start(&sigint_handle, on_signal, SIGINT);
+  uv_signal_init(loop, &sigterm_handle);
+  uv_signal_start(&sigterm_handle, on_signal, SIGTERM);
+#if defined(CIRCLE_UNIX)
+  uv_signal_init(loop, &sighup_handle);
+  uv_signal_start(&sighup_handle, on_signal, SIGHUP);
+  uv_signal_init(loop, &sigusr1_handle);
+  uv_signal_start(&sigusr1_handle, on_signal, SIGUSR1);
+  uv_signal_init(loop, &sigusr2_handle);
+  uv_signal_start(&sigusr2_handle, on_signal, SIGUSR2);
+#endif
+
   /* If copyover mother_desc is already set up */
   if (!fCopyOver) {
      log ("Opening mother connection.");
      mother_desc = init_socket (local_port);
+  } else {
+    /* Need to adapt copyover socket to libuv handle */
+    uv_tcp_init(loop, &mother_handle);
+    uv_tcp_open(&mother_handle, mother_desc);
+    uv_listen((uv_stream_t *)&mother_handle, 5, on_new_connection);
   }
 
   event_init();
@@ -518,16 +840,15 @@ static void init_game(ush_int local_port)
 
   boot_db();
 
-#if defined(CIRCLE_UNIX) || defined(CIRCLE_MACINTOSH)
-  log("Signal trapping.");
-  signal_setup();
-#endif
-
   /* If we made it this far, we will be able to restart without problem. */
   remove(KILLSCRIPT_FILE);
 
   if (fCopyOver) /* reload players */
-  copyover_recover();
+    copyover_recover();
+
+  /* Initialize heartbeat timer */
+  uv_timer_init(loop, &heartbeat_timer);
+  uv_timer_start(&heartbeat_timer, heartbeat_cb, 0, OPT_USEC / 1000);
 
   log("Entering game loop.");
 
@@ -539,7 +860,8 @@ static void init_game(ush_int local_port)
   while (descriptor_list)
     close_socket(descriptor_list);
 
-  CLOSE_SOCKET(mother_desc);
+  uv_close((uv_handle_t *)&mother_handle, NULL);
+  uv_run(loop, UV_RUN_DEFAULT); /* Run one more time to let closes finish */
 
   if (circle_reboot != 2)
     save_all();
@@ -558,74 +880,10 @@ static void init_game(ush_int local_port)
  * its options up, binds it, and listens. */
 static socket_t init_socket(ush_int local_port)
 {
-  socket_t s;
   struct sockaddr_in sa;
-  int opt;
+  int r;
 
-#ifdef CIRCLE_WINDOWS
-  {
-    WORD wVersionRequested;
-    WSADATA wsaData;
-
-    wVersionRequested = MAKEWORD(1, 1);
-
-    if (WSAStartup(wVersionRequested, &wsaData) != 0) {
-      log("SYSERR: WinSock not available!");
-      exit(1);
-    }
-
-    /* 4 = stdin, stdout, stderr, mother_desc.  Windows might keep sockets and
-     * files separate, in which case this isn't necessary, but we will err on
-     * the side of caution. */
-    if ((wsaData.iMaxSockets - 4) < max_players) {
-      max_players = wsaData.iMaxSockets - 4;
-    }
-    log("Max players set to %d", max_players);
-
-    if ((s = socket(PF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET) {
-      log("SYSERR: Error opening network connection: Winsock error #%d",
-	  WSAGetLastError());
-      exit(1);
-    }
-  }
-#else
-  /* Should the first argument to socket() be AF_INET or PF_INET?  I don't
-   * know, take your pick.  PF_INET seems to be more widely adopted, and
-   * Comer (_Internetworking with TCP/IP_) even makes a point to say that
-   * people erroneously use AF_INET with socket() when they should be using
-   * PF_INET.  However, the man pages of some systems indicate that AF_INET
-   * is correct; some such as ConvexOS even say that you can use either one.
-   * All implementations I've seen define AF_INET and PF_INET to be the same
-   * number anyway, so the point is (hopefully) moot. */
-
-  if ((s = socket(PF_INET, SOCK_STREAM, 0)) < 0) {
-    perror("SYSERR: Error creating socket");
-    exit(1);
-  }
-#endif				/* CIRCLE_WINDOWS */
-
-#if defined(SO_REUSEADDR) && !defined(CIRCLE_MACINTOSH)
-  opt = 1;
-  if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (char *) &opt, sizeof(opt)) < 0){
-    perror("SYSERR: setsockopt REUSEADDR");
-    exit(1);
-  }
-#endif
-
-  set_sendbuf(s);
-
-/* The GUSI sockets library is derived from BSD, so it defines SO_LINGER, even
- * though setsockopt() is unimplimented. (from Dean Takemori) */
-#if defined(SO_LINGER) && !defined(CIRCLE_MACINTOSH)
-  {
-    struct linger ld;
-
-    ld.l_onoff = 0;
-    ld.l_linger = 0;
-    if (setsockopt(s, SOL_SOCKET, SO_LINGER, (char *) &ld, sizeof(ld)) < 0)
-      perror("SYSERR: setsockopt SO_LINGER");	/* Not fatal I suppose. */
-  }
-#endif
+  uv_tcp_init(loop, &mother_handle);
 
   /* Clear the structure */
   memset((char *)&sa, 0, sizeof(sa));
@@ -634,14 +892,18 @@ static socket_t init_socket(ush_int local_port)
   sa.sin_port = htons(local_port);
   sa.sin_addr = *(get_bind_addr());
 
-  if (bind(s, (struct sockaddr *) &sa, sizeof(sa)) < 0) {
-    perror("SYSERR: bind");
-    CLOSE_SOCKET(s);
+  uv_tcp_bind(&mother_handle, (const struct sockaddr*)&sa, 0);
+  
+  if ((r = uv_listen((uv_stream_t *)&mother_handle, 5, on_new_connection))) {
+    log("uv_listen error %s", uv_strerror(r));
     exit(1);
   }
-  nonblock(s);
-  listen(s, 5);
-  return (s);
+
+  /* Return the raw fd for legacy code that still expects mother_desc */
+  /* uv_fileno returns the fd if it's open */
+  uv_os_fd_t fd;
+  uv_fileno((const uv_handle_t *)&mother_handle, &fd);
+  return (socket_t)fd;
 }
 
 static int get_max_players(void)
@@ -729,243 +991,11 @@ static int get_max_players(void)
 #endif /* CIRCLE_UNIX */
 }
 
-/* game_loop contains the main loop which drives the entire MUD.  It
- * cycles once every 0.10 seconds and is responsible for accepting new
- * new connections, polling existing connections for input, dequeueing
- * output and sending it out to players, and calling "heartbeat" functions
- * such as mobile_activity(). */
 void game_loop(socket_t local_mother_desc)
 {
-  fd_set input_set, output_set, exc_set, null_set;
-  struct timeval last_time, opt_time, process_time, temp_time;
-  struct timeval before_sleep, now, timeout;
-  char comm[MAX_INPUT_LENGTH];
-  struct descriptor_data *d, *next_d;
-  int missed_pulses, maxdesc, aliased;
-
-  /* initialize various time values */
-  null_time.tv_sec = 0;
-  null_time.tv_usec = 0;
-  opt_time.tv_usec = OPT_USEC;
-  opt_time.tv_sec = 0;
-  FD_ZERO(&null_set);
-
-  gettimeofday(&last_time, (struct timezone *) 0);
-
-  /* The Main Loop.  The Big Cheese.  The Top Dog.  The Head Honcho.  The.. */
-  while (!circle_shutdown) {
-
-    /* Sleep if we don't have any connections */
-    if (descriptor_list == NULL) {
-      log("No connections.  Going to sleep.");
-      FD_ZERO(&input_set);
-      FD_SET(local_mother_desc, &input_set);
-      if (select(local_mother_desc + 1, &input_set, (fd_set *) 0, (fd_set *) 0, NULL) < 0) {
-	if (errno == EINTR)
-	  log("Waking up to process signal.");
-	else
-	  perror("SYSERR: Select coma");
-      } else
-	log("New connection.  Waking up.");
-      gettimeofday(&last_time, (struct timezone *) 0);
-    }
-    /* Set up the input, output, and exception sets for select(). */
-    FD_ZERO(&input_set);
-    FD_ZERO(&output_set);
-    FD_ZERO(&exc_set);
-    FD_SET(local_mother_desc, &input_set);
-
-    maxdesc = local_mother_desc;
-    for (d = descriptor_list; d; d = d->next) {
-#ifndef CIRCLE_WINDOWS
-      if (d->descriptor > maxdesc)
-	maxdesc = d->descriptor;
-#endif
-      FD_SET(d->descriptor, &input_set);
-      FD_SET(d->descriptor, &output_set);
-      FD_SET(d->descriptor, &exc_set);
-    }
-
-    /* At this point, we have completed all input, output and heartbeat
-     * activity from the previous iteration, so we have to put ourselves
-     * to sleep until the next 0.1 second tick.  The first step is to
-     * calculate how long we took processing the previous iteration. */
-
-    gettimeofday(&before_sleep, (struct timezone *) 0); /* current time */
-    timediff(&process_time, &before_sleep, &last_time);
-
-    /* If we were asleep for more than one pass, count missed pulses and sleep
-     * until we're resynchronized with the next upcoming pulse. */
-    if (process_time.tv_sec == 0 && process_time.tv_usec < OPT_USEC) {
-      missed_pulses = 0;
-    } else {
-      missed_pulses = process_time.tv_sec * PASSES_PER_SEC;
-      missed_pulses += process_time.tv_usec / OPT_USEC;
-      process_time.tv_sec = 0;
-      process_time.tv_usec = process_time.tv_usec % OPT_USEC;
-    }
-
-    /* Calculate the time we should wake up */
-    timediff(&temp_time, &opt_time, &process_time);
-    timeadd(&last_time, &before_sleep, &temp_time);
-
-    /* Now keep sleeping until that time has come */
-    gettimeofday(&now, (struct timezone *) 0);
-    timediff(&timeout, &last_time, &now);
-
-    /* Go to sleep */
-    do {
-      circle_sleep(&timeout);
-      gettimeofday(&now, (struct timezone *) 0);
-      timediff(&timeout, &last_time, &now);
-    } while (timeout.tv_usec || timeout.tv_sec);
-
-    /* Poll (without blocking) for new input, output, and exceptions */
-    if (select(maxdesc + 1, &input_set, &output_set, &exc_set, &null_time) < 0) {
-      perror("SYSERR: Select poll");
-      return;
-    }
-    /* If there are new connections waiting, accept them. */
-    if (FD_ISSET(local_mother_desc, &input_set))
-      new_descriptor(local_mother_desc);
-
-    /* Kick out the freaky folks in the exception set and marked for close */
-    for (d = descriptor_list; d; d = next_d) {
-      next_d = d->next;
-      if (FD_ISSET(d->descriptor, &exc_set)) {
-        FD_CLR(d->descriptor, &input_set);
-	      FD_CLR(d->descriptor, &output_set);
-	      close_socket(d);
-      }
-    }
-
-    /* Process descriptors with input pending */
-    for (d = descriptor_list; d; d = next_d) {
-      next_d = d->next;
-      if (FD_ISSET(d->descriptor, &input_set))
-       {
-        if ( d->pProtocol != NULL )      /* KaVir's plugin */
-          d->pProtocol->WriteOOB = 0;    /* KaVir's plugin */
-	      if (process_input(d) < 0)
-	        close_socket(d);
-       }
-    }
-
-    /* Process commands we just read from process_input */
-    for (d = descriptor_list; d; d = next_d) {
-      next_d = d->next;
-
-      /* Not combined to retain --(d->wait) behavior. -gg 2/20/98 If no wait
-       * state, no subtraction.  If there is a wait state then 1 is subtracted.
-       * Therefore we don't go less than 0 ever and don't require an 'if'
-       * bracket. -gg 2/27/99 */
-      if (d->character) {
-        GET_WAIT_STATE(d->character) -= (GET_WAIT_STATE(d->character) > 0);
-
-        if (GET_WAIT_STATE(d->character))
-          continue;
-      }
-
-      if (!get_from_q(&d->input, comm, &aliased))
-        continue;
-
-      if (d->character) {
-	/* Reset the idle timer & pull char back from void if necessary */
-	d->character->char_specials.timer = 0;
-	if (STATE(d) == CON_PLAYING && GET_WAS_IN(d->character) != NOWHERE) {
-	  if (IN_ROOM(d->character) != NOWHERE)
-	    char_from_room(d->character);
-	  char_to_room(d->character, GET_WAS_IN(d->character));
-	  GET_WAS_IN(d->character) = NOWHERE;
-	  act("$n has returned.", TRUE, d->character, 0, 0, TO_ROOM);
-	}
-        GET_WAIT_STATE(d->character) = 1;
-      }
-      d->has_prompt = FALSE;
-
-      if (d->showstr_count) /* Reading something w/ pager */
-	show_string(d, comm);
-      else if (d->str)		/* Writing boards, mail, etc. */
-	string_add(d, comm);
-      else if (STATE(d) != CON_PLAYING) /* In menus, etc. */
-	nanny(d, comm);
-      else {			/* else: we're playing normally. */
-	if (aliased)		/* To prevent recursive aliases. */
-	  d->has_prompt = TRUE;	/* To get newline before next cmd output. */
-	else if (perform_alias(d, comm, sizeof(comm)))    /* Run it through aliasing system */
-	  get_from_q(&d->input, comm, &aliased);
-	command_interpreter(d->character, comm); /* Send it to interpreter */
-      }
-    }
-
-    /* Send queued output out to the operating system (ultimately to user). */
-    for (d = descriptor_list; d; d = next_d) {
-      next_d = d->next;
-      if (*(d->output) && FD_ISSET(d->descriptor, &output_set)) {
-	/* Output for this player is ready */
-	if (process_output(d) < 0)
-	  close_socket(d);
-	else
-	  d->has_prompt = 1;
-      }
-    }
-
-    /* Print prompts for other descriptors who had no other output */
-    for (d = descriptor_list; d; d = d->next) {
-      if (!d->has_prompt) {
-	      write_to_descriptor(d->descriptor, make_prompt(d));
-	      d->has_prompt = TRUE;
-      }
-    }
-
-    /* Kick out folks in the CON_CLOSE or CON_DISCONNECT state */
-    for (d = descriptor_list; d; d = next_d) {
-      next_d = d->next;
-      if (STATE(d) == CON_CLOSE || STATE(d) == CON_DISCONNECT)
-	close_socket(d);
-    }
-
-    /* Now, we execute as many pulses as necessary--just one if we haven't
-     * missed any pulses, or make up for lost time if we missed a few
-     * pulses by sleeping for too long. */
-    missed_pulses++;
-
-    if (missed_pulses <= 0) {
-      log("SYSERR: **BAD** MISSED_PULSES NONPOSITIVE (%d), TIME GOING BACKWARDS!!", missed_pulses);
-      missed_pulses = 1;
-    }
-
-    /* If we missed more than 30 seconds worth of pulses, just do 30 secs */
-    if (missed_pulses > 30 RL_SEC) {
-      log("SYSERR: Missed %d seconds worth of pulses.", missed_pulses / PASSES_PER_SEC);
-      missed_pulses = 30 RL_SEC;
-    }
-
-    /* Now execute the heartbeat functions */
-    while (missed_pulses--)
-      heartbeat(++pulse);
-
-    /* Check for any signals we may have received. */
-    if (reread_wizlist) {
-      reread_wizlist = FALSE;
-      mudlog(CMP, LVL_IMMORT, TRUE, "Signal received - rereading wizlists.");
-      reboot_wizlists();
-    }
-
-    if (emergency_unban) {
-      emergency_unban = FALSE;
-      mudlog(BRF, LVL_IMMORT, TRUE, "Received SIGUSR2 - completely unrestricting game (emergent)");
-      ban_list = NULL;
-      circle_restrict = 0;
-      num_invalid = 0;
-    }
-
-
-#ifdef CIRCLE_UNIX
-    /* Update tics_passed for deadlock protection (UNIX only) */
-    tics_passed++;
-#endif
-  }
+  log("Entering libuv loop.");
+  uv_run(loop, UV_RUN_DEFAULT);
+  log("Exiting libuv loop.");
 }
 
 void heartbeat(int heart_pulse)
@@ -1716,99 +1746,6 @@ static ssize_t perform_socket_write(socket_t desc, const char *txt, size_t lengt
 }
 #endif /* CIRCLE_WINDOWS */
 
-/* write_to_descriptor takes a descriptor, and text to write to the descriptor.
- * It keeps calling the system-level write() until all the text has been
- * delivered to the OS, or until an error is encountered. Returns:
- * >=0  If all is well and good.
- *  -1  If an error was encountered, so that the player should be cut off. */
-int write_to_descriptor(socket_t desc, const char *txt)
-{
-  ssize_t bytes_written;
-  size_t total = strlen(txt), write_total = 0;
-
-  while (total > 0) {
-    bytes_written = perform_socket_write(desc, txt, total);
-
-    if (bytes_written < 0) {
-      /* Fatal error.  Disconnect the player. */
-      perror("SYSERR: Write to socket");
-      return (-1);
-    } else if (bytes_written == 0) {
-      /* Temporary failure -- socket buffer full. */
-      return (write_total);
-    } else {
-      txt += bytes_written;
-      total -= bytes_written;
-      write_total += bytes_written;
-    }
-  }
-
-  return (write_total);
-}
-
-/* Same information about perform_socket_write applies here. I like
- * standards, there are so many of them. -gg 6/30/98 */
-static ssize_t perform_socket_read(socket_t desc, char *read_point, size_t space_left)
-{
-  ssize_t ret;
-
-  #if defined(CIRCLE_ACORN)
-    ret = recv(desc, read_point, space_left, MSG_DONTWAIT);
-  #elif defined(CIRCLE_WINDOWS)
-    ret = recv(desc, read_point, space_left, 0);
-  #else
-    ret = read(desc, read_point, space_left);
-  #endif
-
-  /* Read was successful. */
-  if (ret > 0)
-    return (ret);
-
-  /* read() returned 0, meaning we got an EOF. */
-  if (ret == 0) {
-    log("WARNING: EOF on socket read (connection broken by peer)");
-    return (-1);
-  }
-
-  /* Read returned a value < 0: there was an error. */
-#if defined(CIRCLE_WINDOWS)	/* Windows */
-  if (WSAGetLastError() == WSAEWOULDBLOCK || WSAGetLastError() == WSAEINTR)
-    return (0);
-#else
-
-#ifdef EINTR		/* Interrupted system call - various platforms */
-  if (errno == EINTR)
-    return (0);
-#endif
-
-#ifdef EAGAIN		/* POSIX */
-  if (errno == EAGAIN)
-    return (0);
-#endif
-
-#ifdef EWOULDBLOCK	/* BSD */
-  if (errno == EWOULDBLOCK)
-    return (0);
-#endif /* EWOULDBLOCK */
-
-#ifdef EDEADLK		/* Macintosh */
-  if (errno == EDEADLK)
-    return (0);
-#endif
-
-#ifdef ECONNRESET
-  if (errno == ECONNRESET)
-    return (-1);
-#endif
-
-#endif /* CIRCLE_WINDOWS */
-
-  /* We don't know what happened, cut them off. This qualifies for
-   * a SYSERR because we have no idea what happened at this point.*/
-  perror("SYSERR: perform_socket_read: about to lose connection");
-  return (-1);
-}
-
 /* ASSUMPTION: There will be no newlines in the raw input buffer when this
  * function is called.  We must maintain that before returning.
  *
@@ -1819,68 +1756,24 @@ static ssize_t perform_socket_read(socket_t desc, char *read_point, size_t space
  * above, 'tmp' lost the '+8' since it doesn't need it and the code has been
  * changed to reserve space by accepting one less character. (Do you really
  * need 256 characters on a line?) -gg 1/21/2000 */
+/* Refactored process_input for libuv. 
+ * This function no longer reads from the socket.
+ * It only parses lines that are already in t->inbuf.
+ */
 static int process_input(struct descriptor_data *t)
 {
-  int buf_length, failed_subst;
-  ssize_t bytes_read;
-  size_t space_left;
+  int failed_subst;
   char *ptr, *read_point, *write_point, *nl_pos = NULL;
   char tmp[MAX_INPUT_LENGTH];
-  static char read_buf[MAX_PROTOCOL_BUFFER] = { '\0' }; /* KaVir's plugin */
-  
-  /* first, find the point where we left off reading data */
-  buf_length = strlen(t->inbuf);
-  read_point = t->inbuf + buf_length;
-  space_left = MAX_RAW_INPUT_LENGTH - buf_length - 1;
+  size_t space_left;
 
-  do {
-    if (space_left <= 0) {
-      log("WARNING: process_input: about to close connection: input overflow");
-      return (-1);
-    }
-
-    /* Read # of "bytes_read" from socket, and if we have something, mark the sizeof data
-     * in the read_buf array as NULL */
-    if ((bytes_read = perform_socket_read(t->descriptor, read_buf, space_left)) > 0)
-      read_buf[bytes_read] = '\0';
-
-    /* Since we have recieved atleast 1 byte of data from the socket, lets run it through
-     * ProtocolInput() and rip out anything that is Out Of Band */ 
-    if ( bytes_read > 0 )
-      bytes_read = ProtocolInput( t, read_buf, bytes_read, t->inbuf );
-
-    if (bytes_read < 0)	/* Error, disconnect them. */
-      return (-1);
-    else if (bytes_read == 0)	/* Just blocking, no problems. */
-      return (0);
-
-    /* at this point, we know we got some data from the read */
-    *(read_point + bytes_read) = '\0';	/* terminate the string */
-
-    /* search for a newline in the data we just read */
-    for (ptr = read_point; *ptr && !nl_pos; ptr++)
-      if (ISNEWL(*ptr))
-	      nl_pos = ptr;
-
-    read_point += bytes_read;
-    space_left -= bytes_read;
-
-/* on some systems such as AIX, POSIX-standard nonblocking I/O is broken,
- * causing the MUD to hang when it encounters input not terminated by a
- * newline.  This was causing hangs at the Password: prompt, for example.
- * I attempt to compensate by always returning after the _first_ read, instead
- * of looping forever until a read returns -1.  This simulates non-blocking
- * I/O because the result is we never call read unless we know from select()
- * that data is ready (process_input is only called if select indicates that
- * this descriptor is in the read set).  JE 2/23/95. */
-#if !defined(POSIX_NONBLOCK_BROKEN)
-  } while (nl_pos == NULL);
-#else
-  } while (0);
+  /* search for a newline in the input buffer */
+  for (ptr = t->inbuf; *ptr && !nl_pos; ptr++)
+    if (ISNEWL(*ptr))
+      nl_pos = ptr;
 
   if (nl_pos == NULL)
     return (0);
-#endif /* POSIX_NONBLOCK_BROKEN */
 
   /* okay, at this point we have at least one newline in the string; now we
    * can copy the formatted data to a new array for further processing. */
@@ -2037,7 +1930,11 @@ void close_socket(struct descriptor_data *d)
   struct descriptor_data *temp;
 
   REMOVE_FROM_LIST(d, descriptor_list, next);
-  CLOSE_SOCKET(d->descriptor);
+  
+  if (!uv_is_closing((uv_handle_t *)&d->handle)) {
+    uv_close((uv_handle_t *)&d->handle, on_descriptor_close);
+  }
+
   flush_queues(d);
 
   /* Forget snooping */
@@ -2129,8 +2026,6 @@ void close_socket(struct descriptor_data *d)
     default:
       break;
   }
-
-  free(d);
 }
 
 static void check_idle_passwords(void)

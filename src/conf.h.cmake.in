@@ -43,7 +43,10 @@
 #cmakedefine HAVE_STRUCT_IN_ADDR
 
 /* Define to `int' if <sys/socket.h> doesn't define.  */
-#cmakedefine socklen_t @socklen_t@
+#cmakedefine HAVE_SOCKLEN_T
+#ifndef HAVE_SOCKLEN_T
+#define socklen_t int
+#endif
 
 /* Define to `int' if <sys/types.h> doesn't define.  */
 #cmakedefine ssize_t @ssize_t@
@@ -333,5 +336,10 @@
 /* Check for a prototype to write. */
 #cmakedefine NEED_WRITE_PROTO
 
+/* Define if you have the <uv.h> header file. */
+#cmakedefine HAVE_LIBUV 1
+
+/* Define if we're compiling CircleMUD under any type of Windows system.  */
+#cmakedefine CIRCLE_WINDOWS
 
 #endif /* _CONF_H_ */

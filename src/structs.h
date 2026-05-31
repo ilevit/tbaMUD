@@ -12,6 +12,7 @@
 #ifndef _STRUCTS_H_
 #define _STRUCTS_H_
 
+#include <uv.h>
 #include "protocol.h" /* Kavir Plugin*/
 #include "lists.h"
 
@@ -1108,6 +1109,9 @@ struct descriptor_data
   protocol_t *pProtocol;    /**< Kavir plugin */
   
   struct list_data * events;
+
+  uv_tcp_t handle;          /**< libuv TCP handle */
+  uv_write_t write_req;     /**< libuv write request */
 };
 
 /* other miscellaneous structures */

@@ -300,7 +300,7 @@ struct in_addr {
 # endif
 
 # ifndef _WINSOCK2API_	/* Winsock1 and Winsock 2 conflict. */
-#  include <winsock.h>
+#  include <winsock2.h>
 # endif
 
 # ifndef FD_SETSIZE	/* MSVC 6 is reported to have 64. */
