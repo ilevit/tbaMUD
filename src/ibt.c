@@ -162,7 +162,7 @@ static IBT_DATA *read_ibt( char *filename, FILE *fp )
                 STRFREE( id_num );
               }  
               if ( dated ) {
-                ibtData->dated = atol(dated);
+                ibtData->dated = atoll(dated);
                 STRFREE( dated );
               }  
               if ( !ibtData->name )
@@ -329,7 +329,7 @@ void save_ibt_file(int mode)
        if (ibtData->id_num != NOBODY)
          fprintf(fp,"IdNum     %ld\n",ibtData->id_num);
        if (ibtData->dated != 0)
-         fprintf(fp,"Dated     %ld\n",ibtData->dated);
+         fprintf(fp,"Dated     %lld\n", (long long) ibtData->dated);
        fprintf(fp,"Level     %d\n",ibtData->level);
        fprintf(fp,"Room      %d\n",ibtData->room);
        fprintf(fp,"Flags     %d %d %d %d\n",ibtData->flags[0],ibtData->flags[1],
