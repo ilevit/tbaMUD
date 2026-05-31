@@ -26,7 +26,7 @@ if (CMAKE_COMPILER_IS_GNUCC)
     check_c_compiler_flag(-Wno-char-subscripts SUPPORTS_WNO_CHAR_SUBSCRIPTS)
 
     if (SUPPORTS_WALL)
-        set(MYFLAGS "-Wall")
+        set(MYFLAGS "-Wall -Wno-unknown-pragmas")
         if (SUPPORTS_WNO_CHAR_SUBSCRIPTS)
             set(MYFLAGS "${MYFLAGS} -Wno-char-subscripts")
         endif()
@@ -386,7 +386,7 @@ endforeach()
 
 # ========== Generate conf.h ==========
 configure_file(
-        ${CMAKE_SOURCE_DIR}/src/conf.h.cmake.in
+        ${CMAKE_SOURCE_DIR}/src/conf.h.win
         ${CMAKE_BINARY_DIR}/conf.h
 )
 
@@ -395,12 +395,23 @@ configure_file(
 # ========== Source-filer ==========
 file(GLOB SRC_FILES src/*.c)
 
+if (WIN32)
+    list(APPEND EXTRA_LIBS ws2_32)
+    if (MSVC)
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /FORCE:MULTIPLE")
+    else()
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--allow-multiple-definition")
+    endif()
+endif()
+
 # ========== Bygg kjørbar ==========
 add_executable(circle ${SRC_FILES})
 target_link_libraries(circle ${EXTRA_LIBS})
 
 add_subdirectory(src/util)
-add_subdirectory(tests)
+if (NOT WIN32)
+    add_subdirectory(tests)
+endif()
 
 if (MEMORY_DEBUG)
     message(STATUS "MEMORY_DEBUG is activated, setting up zmalloc")

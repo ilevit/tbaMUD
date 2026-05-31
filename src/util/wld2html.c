@@ -45,7 +45,6 @@ typedef unsigned char ubyte;
 typedef signed short int sh_int;
 typedef unsigned short int ush_int;
 typedef char bool;
-typedef char byte;
 
 typedef int room_num;
 typedef sh_int obj_num;
@@ -123,7 +122,7 @@ struct room_data {
   struct room_direction_data *dir_option[NUM_OF_DIRS];	/* Directions */
   int room_flags;		/* DEATH,DARK ... etc                 */
 
-  byte light;			/* Number of lightsources in room     */
+  char light;			/* Number of lightsources in room     */
 };
 
 /* ====================================================================== */

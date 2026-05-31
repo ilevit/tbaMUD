@@ -283,7 +283,9 @@ struct in_addr {
 
 # define snprintf _snprintf
 # define vsnprintf _vsnprintf
-# define PATH_MAX MAX_PATH
+# if !defined PATH_MAX
+#   define PATH_MAX MAX_PATH
+# endif
 
 # if !defined(__BORLANDC__) && !defined(LCC_WIN32)	/* MSVC */
 #  define chdir _chdir

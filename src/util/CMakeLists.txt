@@ -6,10 +6,13 @@ set(TOOLS
   rebuildIndex
   rebuildMailIndex
   shopconv
-  sign
   split
   wld2html
 )
+
+if(NOT WIN32)
+  list(APPEND TOOLS sign)
+endif()
 
 # common includes and flags
 include_directories(${CMAKE_SOURCE_DIR}/src)

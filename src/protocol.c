@@ -7,34 +7,25 @@
  ******************************************************************************/
 
 #include "conf.h"
+#include "sysdep.h"
+
 #ifndef CIRCLE_WINDOWS
-#include <arpa/telnet.h>
+# include <arpa/telnet.h>
+#else
+# include "telnet.h"
 #endif
+
 #include <sys/types.h>
 #include "protocol.h"
-
-#ifdef _MSC_VER
-#include "telnet.h"
-#define alloca _alloca
-#endif
-
-/******************************************************************************
- The following section is for Diku/Merc derivatives.  Replace as needed.
- ******************************************************************************/
-
-#include "conf.h"
-#include "sysdep.h"
 #include "structs.h"
 #include "utils.h"
 #include "comm.h"
-#include "interpreter.h"
-#include "handler.h"
 #include "db.h"
 #include "screen.h"
-#include "improved-edit.h"
-#include "dg_scripts.h"
-#include "act.h"
-#include "modify.h"
+
+#ifdef _MSC_VER
+#define alloca _alloca
+#endif
 
 /* Globals */
 const char * RGBone = "F022";
