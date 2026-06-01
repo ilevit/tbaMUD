@@ -56,7 +56,7 @@ typedef RETSIGTYPE sigfunc(int);
 
 void echo_off(struct descriptor_data *d);
 void echo_on(struct descriptor_data *d);
-void game_loop(socket_t mother_desc);
+void game_loop(void);
 void heartbeat(int heart_pulse);
 void copyover_recover(void);
 

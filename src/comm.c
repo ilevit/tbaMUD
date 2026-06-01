@@ -101,7 +101,7 @@ int scheck = 0;           /* for syntax checking mode */
 FILE *logfile = NULL;     /* Where to send the log messages. */
 unsigned long pulse = 0;  /* number of pulses since game start */
 ush_int port;
-socket_t mother_desc;
+uv_os_sock_t mother_desc;
 int next_tick = SECS_PER_MUD_HOUR;  /* Tick countdown */
 
 /* libuv globals */
@@ -142,30 +142,24 @@ static RETSIGTYPE unrestrict_game(int sig);
 static RETSIGTYPE reap(int sig);
 static RETSIGTYPE checkpointing(int sig);
 static RETSIGTYPE hupsig(int sig);
-static ssize_t perform_socket_read(socket_t desc, char *read_point,size_t space_left);
-static ssize_t perform_socket_write(socket_t desc, const char *txt,size_t length);
-static void circle_sleep(struct timeval *timeout);
 static int get_from_q(struct txt_q *queue, char *dest, int *aliased);
 static void init_game(ush_int port);
 static void signal_setup(void);
 static socket_t init_socket(ush_int port);
-static int new_descriptor(socket_t s);
 static int get_max_players(void);
 static int process_output(struct descriptor_data *t);
 static int process_input(struct descriptor_data *t);
 static void timediff(struct timeval *diff, struct timeval *a, struct timeval *b);
 static void timeadd(struct timeval *sum, struct timeval *a, struct timeval *b);
 static void flush_queues(struct descriptor_data *d);
-static void nonblock(socket_t s);
 static int perform_subst(struct descriptor_data *t, char *orig, char *subst);
 static void record_usage(void);
 static char *make_prompt(struct descriptor_data *point);
 static void check_idle_passwords(void);
-static void init_descriptor (struct descriptor_data *newd, int desc);
+static void init_descriptor (struct descriptor_data *newd, socket_t desc);
 
 static struct in_addr *get_bind_addr(void);
 static int parse_ip(const char *addr, struct in_addr *inaddr);
-static int set_sendbuf(socket_t s);
 static void free_bufpool(void);
 static void setup_log(const char *filename, int fd);
 static int open_logfile(const char *filename, FILE *stderr_fp);
@@ -356,13 +350,6 @@ int write_to_descriptor(socket_t desc, const char *txt)
     }
   }
 
-  return -1;
-}
-
-static ssize_t perform_socket_read(socket_t desc, char *read_point, size_t space_left)
-{
-  /* This is now handled by on_read callback in libuv refactor.
-   * We return -1 to signal that this path should not be used synchronously. */
   return -1;
 }
 
@@ -852,7 +839,7 @@ static void init_game(ush_int local_port)
 
   log("Entering game loop.");
 
-  game_loop(mother_desc);
+  game_loop();
 
   Crash_save_all();
 
@@ -991,7 +978,7 @@ static int get_max_players(void)
 #endif /* CIRCLE_UNIX */
 }
 
-void game_loop(socket_t local_mother_desc)
+void game_loop(void)
 {
   log("Entering libuv loop.");
   uv_run(loop, UV_RUN_DEFAULT);
@@ -1455,23 +1442,8 @@ int parse_ip(const char *addr, struct in_addr *inaddr)
 }
 #endif /* INET_ATON and INET_ADDR */
 
-/* Sets the kernel's send buffer size for the descriptor */
-static int set_sendbuf(socket_t s)
-{
-#if defined(SO_SNDBUF) && !defined(CIRCLE_MACINTOSH)
-  int opt = MAX_SOCK_BUF;
-
-  if (setsockopt(s, SOL_SOCKET, SO_SNDBUF, (char *) &opt, sizeof(opt)) < 0) {
-    perror("SYSERR: setsockopt SNDBUF");
-    return (-1);
-  }
-#endif
-
-  return (0);
-}
-
 /* Initialize a descriptor */
-static void init_descriptor (struct descriptor_data *newd, int desc)
+static void init_descriptor (struct descriptor_data *newd, socket_t desc)
 {
   static int last_desc = 0;	/* last descriptor number */
 
@@ -1491,88 +1463,6 @@ static void init_descriptor (struct descriptor_data *newd, int desc)
   newd->pProtocol = ProtocolCreate(); /* KaVir's plugin*/
   newd->events = create_list();
   
-}
-
-static int new_descriptor(socket_t s)
-{
-  socket_t desc;
-  int sockets_connected = 0;
-  int greetsize;
-  socklen_t i;
-  struct descriptor_data *newd;
-  struct sockaddr_in peer;
-  struct hostent *from;
-  
-  /* accept the new connection */
-  i = sizeof(peer);
-  if ((desc = accept(s, (struct sockaddr *) &peer, &i)) == INVALID_SOCKET) {
-    perror("SYSERR: accept");
-    return (-1);
-  }
-  /* keep it from blocking */
-  nonblock(desc);
-
-  /* set the send buffer size */
-  if (set_sendbuf(desc) < 0) {
-    CLOSE_SOCKET(desc);
-    return (0);
-  }
-
-  /* make sure we have room for it */
-  for (newd = descriptor_list; newd; newd = newd->next)
-    sockets_connected++;
-
-  if (sockets_connected >= CONFIG_MAX_PLAYING) {
-    write_to_descriptor(desc, "Sorry, the game is full right now... please try again later!\r\n");
-    CLOSE_SOCKET(desc);
-    return (0);
-  }
-  /* create a new descriptor */
-  CREATE(newd, struct descriptor_data, 1);
-
-  /* find the sitename */
-  if (CONFIG_NS_IS_SLOW ||
-      !(from = gethostbyaddr((char *) &peer.sin_addr,
-		             sizeof(peer.sin_addr), AF_INET))) {
-
-    /* resolution failed */
-    if (!CONFIG_NS_IS_SLOW)
-      perror("SYSERR: gethostbyaddr");
-
-    /* find the numeric site address */
-    strncpy(newd->host, (char *)inet_ntoa(peer.sin_addr), HOST_LENGTH);	/* strncpy: OK (n->host:HOST_LENGTH+1) */
-    *(newd->host + HOST_LENGTH) = '\0';
-  } else {
-    strncpy(newd->host, from->h_name, HOST_LENGTH);	/* strncpy: OK (n->host:HOST_LENGTH+1) */
-    *(newd->host + HOST_LENGTH) = '\0';
-  }
-
-  /* determine if the site is banned */
-  if (isbanned(newd->host) == BAN_ALL) {
-    CLOSE_SOCKET(desc);
-    mudlog(CMP, LVL_GOD, TRUE, "Connection attempt denied from [%s]", newd->host);
-    free(newd);
-    return (0);
-  }
-
-  /* initialize descriptor data */
-  init_descriptor(newd, desc);
-
-  /* prepend to list */
-  newd->next = descriptor_list;
-  descriptor_list = newd;
-
-  if (CONFIG_PROTOCOL_NEGOTIATION) {
-    /* Attach Event */ 
-    NEW_EVENT(ePROTOCOLS, newd, NULL, 1.5 * PASSES_PER_SEC);
-    /* KaVir's plugin*/
-    write_to_output(newd, "Attempting to Detect Client, Please Wait...\r\n");
-    ProtocolNegotiate(newd);
-  } else {
-    greetsize = strlen(GREETINGS);
-    write_to_output(newd, "%s", ProtocolOutput(newd, GREETINGS, &greetsize));
-  }
-  return (0);
 }
 
 /* Send all of the output that we've accumulated for a player out to the
@@ -1659,92 +1549,6 @@ static int process_output(struct descriptor_data *t)
 
   return (result);
 }
-
-/* perform_socket_write: takes a descriptor, a pointer to text, and a
- * text length, and tries once to send that text to the OS.  This is
- * where we stuff all the platform-dependent stuff that used to be
- * ugly #ifdef's in write_to_descriptor(). This function must return:
- * -1  If a fatal error was encountered in writing to the descriptor.
- *  0  If a transient failure was encountered (e.g. socket buffer full).
- * >0  To indicate the number of bytes successfully written, possibly
- *     fewer than the number the caller requested be written.
- * Right now there are two versions of this function: one for Windows,
- * and one for all other platforms. */
-
-#if defined(CIRCLE_WINDOWS)
-ssize_t perform_socket_write(socket_t desc, const char *txt, size_t length)
-{
-  ssize_t result;
-
-  result = send(desc, txt, length, 0);
-
-  if (result > 0) {
-    /* Write was successful */
-    return (result);
-  }
-
-  if (result == 0) {
-    /* This should never happen! */
-    log("SYSERR: Huh??  write() returned 0???  Please report this!");
-    return (-1);
-  }
-
-  /* result < 0: An error was encountered. */
-
-  /* Transient error? */
-  if (WSAGetLastError() == WSAEWOULDBLOCK || WSAGetLastError() == WSAEINTR)
-    return (0);
-
-  /* Must be a fatal error. */
-  return (-1);
-}
-
-#else
-
-#if defined(CIRCLE_ACORN)
-#define write	socketwrite
-#endif
-
-/* perform_socket_write for all Non-Windows platforms */
-static ssize_t perform_socket_write(socket_t desc, const char *txt, size_t length)
-{
-  ssize_t result;
-
-  result = write(desc, txt, length);
-
-  if (result > 0) {
-    /* Write was successful. */
-    return (result);
-  }
-
-  if (result == 0) {
-    /* This should never happen! */
-    log("SYSERR: Huh??  write() returned 0???  Please report this!");
-    return (-1);
-  }
-
-  /* result < 0, so an error was encountered - is it transient? Unfortunately,
-   * different systems use different constants to indicate this. */
-
-#ifdef EAGAIN		/* POSIX */
-  if (errno == EAGAIN)
-    return (0);
-#endif
-
-#ifdef EWOULDBLOCK	/* BSD */
-  if (errno == EWOULDBLOCK)
-    return (0);
-#endif
-
-#ifdef EDEADLK		/* Macintosh */
-  if (errno == EDEADLK)
-    return (0);
-#endif
-
-  /* Looks like the error was fatal.  Too bad. */
-  return (-1);
-}
-#endif /* CIRCLE_WINDOWS */
 
 /* ASSUMPTION: There will be no newlines in the raw input buffer when this
  * function is called.  We must maintain that before returning.
@@ -2046,68 +1850,6 @@ static void check_idle_passwords(void)
     }
   }
 }
-
-/* I tried to universally convert Circle over to POSIX compliance, but
- * alas, some systems are still straggling behind and don't have all the
- * appropriate defines.  In particular, NeXT 2.x defines O_NDELAY but not
- * O_NONBLOCK.  Krusty old NeXT machines!  (Thanks to Michael Jones for
- * this and various other NeXT fixes.) */
-
-#if defined(CIRCLE_WINDOWS)
-
-void nonblock(socket_t s)
-{
-  unsigned long val = 1;
-  ioctlsocket(s, FIONBIO, &val);
-}
-
-#elif defined(CIRCLE_AMIGA)
-
-void nonblock(socket_t s)
-{
-  long val = 1;
-  IoctlSocket(s, FIONBIO, &val);
-}
-
-#elif defined(CIRCLE_ACORN)
-
-void nonblock(socket_t s)
-{
-  int val = 1;
-  socket_ioctl(s, FIONBIO, &val);
-}
-
-#elif defined(CIRCLE_VMS)
-
-void nonblock(socket_t s)
-{
-  int val = 1;
-
-  if (ioctl(s, FIONBIO, &val) < 0) {
-    perror("SYSERR: Fatal error executing nonblock (comm.c)");
-    exit(1);
-  }
-}
-
-#elif defined(CIRCLE_UNIX) || defined(CIRCLE_OS2) || defined(CIRCLE_MACINTOSH)
-
-#ifndef O_NONBLOCK
-#define O_NONBLOCK O_NDELAY
-#endif
-
-static void nonblock(socket_t s)
-{
-  int flags;
-
-  flags = fcntl(s, F_GETFL, 0);
-  flags |= O_NONBLOCK;
-  if (fcntl(s, F_SETFL, flags) < 0) {
-    perror("SYSERR: Fatal error executing nonblock (comm.c)");
-    exit(1);
-  }
-}
-#endif  /* CIRCLE_UNIX || CIRCLE_OS2 || CIRCLE_MACINTOSH */
-
 
 /*  signal-handling functions (formerly signals.c).  UNIX only. */
 #if defined(CIRCLE_UNIX) || defined(CIRCLE_MACINTOSH)
@@ -2635,26 +2377,6 @@ static int open_logfile(const char *filename, FILE *stderr_fp)
   printf("SYSERR: Error opening file '%s': %s\n", filename, strerror(errno));
   return (FALSE);
 }
-
-/* This may not be pretty but it keeps game_loop() neater than if it was inline. */
-#if defined(CIRCLE_WINDOWS)
-void circle_sleep(struct timeval *timeout)
-{
-  Sleep(timeout->tv_sec * 1000 + timeout->tv_usec / 1000);
-}
-
-#else
-static void circle_sleep(struct timeval *timeout)
-{
-  if (select(0, (fd_set *) 0, (fd_set *) 0, (fd_set *) 0, timeout) < 0) {
-    if (errno != EINTR) {
-      perror("SYSERR: Select sleep");
-      exit(1);
-    }
-  }
-}
-
-#endif /* CIRCLE_WINDOWS */
 
 /* KaVir's plugin*/
 static void msdp_update( void )
