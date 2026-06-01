@@ -149,8 +149,6 @@ static socket_t init_socket(ush_int port);
 static int get_max_players(void);
 static int process_output(struct descriptor_data *t);
 static int process_input(struct descriptor_data *t);
-static void timediff(struct timeval *diff, struct timeval *a, struct timeval *b);
-static void timeadd(struct timeval *sum, struct timeval *a, struct timeval *b);
 static void flush_queues(struct descriptor_data *d);
 static int perform_subst(struct descriptor_data *t, char *orig, char *subst);
 static void record_usage(void);
@@ -158,8 +156,6 @@ static char *make_prompt(struct descriptor_data *point);
 static void check_idle_passwords(void);
 static void init_descriptor (struct descriptor_data *newd, socket_t desc);
 
-static struct in_addr *get_bind_addr(void);
-static int parse_ip(const char *addr, struct in_addr *inaddr);
 static void free_bufpool(void);
 static void setup_log(const char *filename, int fd);
 static int open_logfile(const char *filename, FILE *stderr_fp);
@@ -168,18 +164,6 @@ static sigfunc *my_signal(int signo, sigfunc *func);
 #endif
 
 static void msdp_update(void); /* KaVir plugin*/
-
-/* externally defined functions, used locally */
-#ifdef __CXREF__
-#undef FD_ZERO
-#undef FD_SET
-#undef FD_ISSET
-#undef FD_CLR
-#define FD_ZERO(x)
-#define FD_SET(x, y) 0
-#define FD_ISSET(x, y) 0
-#define FD_CLR(x, y)
-#endif
 
 /* libuv callbacks */
 
@@ -428,6 +412,10 @@ static void heartbeat_cb(uv_timer_t *handle)
       d->has_prompt = TRUE;
     }
   }
+
+  if (circle_shutdown) {
+    uv_stop(loop);
+  }
 }
 
 static void on_signal(uv_signal_t *handle, int signum)
@@ -459,25 +447,6 @@ static void on_signal(uv_signal_t *handle, int signum)
 }
 
 /*  main game loop and related stuff */
-
-#ifdef NEED_GETTIMEOFDAY_PROTO
-/* Windows and Mac do not have gettimeofday, so we'll simulate it. Borland C++
- * warns: "Undefined structure 'timezone'" */
-void gettimeofday(struct timeval *t, struct timezone *dummy)
-{
-#if defined(CIRCLE_WINDOWS)
-  DWORD millisec = GetTickCount();
-#elif defined(CIRCLE_MACINTOSH)
-  unsigned long int millisec;
-  millisec = (int)((float)TickCount() * 1000.0 / 60.0);
-#endif
-
-  t->tv_sec = (int) (millisec / 1000);
-  t->tv_usec = (millisec % 1000) * 1000;
-}
-
-#endif	/* NEED_GETTIMEOFDAY_PROTO */
-
 int main(int argc, char **argv)
 {
   int pos = 1;
@@ -872,12 +841,15 @@ static socket_t init_socket(ush_int local_port)
 
   uv_tcp_init(loop, &mother_handle);
 
-  /* Clear the structure */
-  memset((char *)&sa, 0, sizeof(sa));
-
-  sa.sin_family = AF_INET;
-  sa.sin_port = htons(local_port);
-  sa.sin_addr = *(get_bind_addr());
+  if (uv_ip4_addr(CONFIG_DFLT_IP ?: "0.0.0.0", local_port, &sa)) {
+    log("SYSERR: DFLT_IP of %s appears to be an invalid IP address", CONFIG_DFLT_IP);
+    uv_ip4_addr("0.0.0.0", local_port, &sa);
+  }
+  /* Put the address that we've finally decided on into the logs */
+  if (sa.sin_addr.s_addr == htonl(INADDR_ANY))
+      log("Binding to all IP interfaces on this host.");
+  else
+      log("Binding only to IP address %s", inet_ntoa(sa.sin_addr));
 
   uv_tcp_bind(&mother_handle, (const struct sockaddr*)&sa, 0);
   
@@ -1036,44 +1008,6 @@ void heartbeat(int heart_pulse)
 
   /* Every pulse! Don't want them to stink the place up... */
   extract_pending_chars();
-}
-
-/* new code to calculate time differences, which works on systems for which
- * tv_usec is unsigned (and thus comparisons for something being < 0 fail).
- * Based on code submitted by ss@sirocco.cup.hp.com. Code to return the time
- * difference between a and b (a-b). Always returns a nonnegative value
- * (floors at 0). */
-static void timediff(struct timeval *rslt, struct timeval *a, struct timeval *b)
-{
-  if (a->tv_sec < b->tv_sec)
-    *rslt = null_time;
-  else if (a->tv_sec == b->tv_sec) {
-    if (a->tv_usec < b->tv_usec)
-      *rslt = null_time;
-    else {
-      rslt->tv_sec = 0;
-      rslt->tv_usec = a->tv_usec - b->tv_usec;
-    }
-  } else {			/* a->tv_sec > b->tv_sec */
-    rslt->tv_sec = a->tv_sec - b->tv_sec;
-    if (a->tv_usec < b->tv_usec) {
-      rslt->tv_usec = a->tv_usec + 1000000 - b->tv_usec;
-      rslt->tv_sec--;
-    } else
-      rslt->tv_usec = a->tv_usec - b->tv_usec;
-  }
-}
-
-/* Add 2 time values.  Patch sent by "d. hall" to fix 'static' usage. */
-static void timeadd(struct timeval *rslt, struct timeval *a, struct timeval *b)
-{
-  rslt->tv_sec = a->tv_sec + b->tv_sec;
-  rslt->tv_usec = a->tv_usec + b->tv_usec;
-
-  while (rslt->tv_usec >= 1000000) {
-    rslt->tv_usec -= 1000000;
-    rslt->tv_sec++;
-  }
 }
 
 static void record_usage(void)
@@ -1374,73 +1308,6 @@ static void free_bufpool(void)
     bufpool = tmp;
   }
 }
-
-/*  socket handling */
-/* get_bind_addr: Return a struct in_addr that should be used in our
- * call to bind().  If the user has specified a desired binding
- * address, we try to bind to it; otherwise, we bind to INADDR_ANY.
- * Note that inet_aton() is preferred over inet_addr() so we use it if
- * we can.  If neither is available, we always bind to INADDR_ANY. */
-static struct in_addr *get_bind_addr()
-{
-  static struct in_addr bind_addr;
-
-  /* Clear the structure */
-  memset((char *) &bind_addr, 0, sizeof(bind_addr));
-
-  /* If DLFT_IP is unspecified, use INADDR_ANY */
-  if (CONFIG_DFLT_IP == NULL) {
-    bind_addr.s_addr = htonl(INADDR_ANY);
-  } else {
-    /* If the parsing fails, use INADDR_ANY */
-    if (!parse_ip(CONFIG_DFLT_IP, &bind_addr)) {
-      log("SYSERR: DFLT_IP of %s appears to be an invalid IP address",
-          CONFIG_DFLT_IP);
-      bind_addr.s_addr = htonl(INADDR_ANY);
-    }
-  }
-
-  /* Put the address that we've finally decided on into the logs */
-  if (bind_addr.s_addr == htonl(INADDR_ANY))
-    log("Binding to all IP interfaces on this host.");
-  else
-    log("Binding only to IP address %s", inet_ntoa(bind_addr));
-
-  return (&bind_addr);
-}
-
-#ifdef HAVE_INET_ATON
-/* inet_aton's interface is the same as parse_ip's: 0 on failure, non-0 if
- * successful. */
-static int parse_ip(const char *addr, struct in_addr *inaddr)
-{
-  return (inet_aton(addr, inaddr));
-}
-
-#elif HAVE_INET_ADDR
-
-/* inet_addr has a different interface, so we emulate inet_aton's */
-int parse_ip(const char *addr, struct in_addr *inaddr)
-{
-  long ip;
-
-  if ((ip = inet_addr(addr)) == -1) {
-    return (0);
-  } else {
-    inaddr->s_addr = (unsigned long) ip;
-    return (1);
-  }
-}
-
-#else
-/* If you have neither function - sorry, you can't do specific binding. */
-int parse_ip(const char *addr, struct in_addr *inaddr)
-{
-  log("SYSERR: warning: you're trying to set DFLT_IP but your system has no "
-      "functions to parse IP addresses (how bizarre!)");
-  return (0);
-}
-#endif /* INET_ATON and INET_ADDR */
 
 /* Initialize a descriptor */
 static void init_descriptor (struct descriptor_data *newd, socket_t desc)
