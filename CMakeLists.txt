@@ -368,7 +368,7 @@ set(PROTO_FUNCTIONS
 # ========== libuv check ==========
 find_package(PkgConfig QUIET)
 if (PKG_CONFIG_FOUND)
-    pkg_check_modules(LIBUV libuv>=1.0.0)
+    pkg_check_modules(LIBUV REQUIRED libuv>=1.0.0)
 endif()
 
 if (NOT LIBUV_FOUND)
@@ -388,9 +388,6 @@ endif()
 
 
 # ========== Generate conf.h ==========
-if (LIBUV_FOUND)
-    set(HAVE_LIBUV 1)
-endif()
 
 # We need a temporary conf.h to check for missing prototypes
 configure_file(
@@ -451,6 +448,7 @@ list(APPEND EXTRA_LIBS ${LIBUV_LIBRARIES})
 
 # ========== Bygg kjørbar ==========
 add_executable(circle ${SRC_FILES})
+target_compile_definitions(circle PRIVATE UV_EXTERN=)
 target_link_libraries(circle ${EXTRA_LIBS})
 
 add_subdirectory(src/util)

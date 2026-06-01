@@ -336,9 +336,6 @@
 /* Check for a prototype to write. */
 #cmakedefine NEED_WRITE_PROTO
 
-/* Define if you have the <uv.h> header file. */
-#cmakedefine HAVE_LIBUV 1
-
 /* Define if we're compiling CircleMUD under any type of Windows system.  */
 #cmakedefine CIRCLE_WINDOWS
 
