@@ -208,28 +208,12 @@ struct in_addr {
 #include <sys/fcntl.h>
 #endif
 
-#ifdef HAVE_SYS_SOCKET_H
-# include <sys/socket.h>
-#endif
-
 #ifdef HAVE_SYS_RESOURCE_H
 # include <sys/resource.h>
 #endif
 
 #ifdef HAVE_SYS_WAIT_H
 # include <sys/wait.h>
-#endif
-
-#ifdef HAVE_NETINET_IN_H
-# include <netinet/in.h>
-#endif
-
-#ifdef HAVE_ARPA_INET_H
-# include <arpa/inet.h>
-#endif
-
-#ifdef HAVE_NETDB_H
-# include <netdb.h>
 #endif
 
 #ifdef HAVE_SIGNAL_H
@@ -279,6 +263,11 @@ struct in_addr {
 
 /* Socket/header miscellany. */
 
+#include <uv.h>
+/* libuv provides its own socket and file descriptor types */
+typedef uv_os_sock_t socket_t;
+#define CLOSE_SOCKET(sock) /* Handled by uv_close in comm.c */
+
 #if defined(CIRCLE_WINDOWS)	/* Definitions for Win32 */
 
 # define snprintf _snprintf
@@ -297,10 +286,6 @@ struct in_addr {
 #  pragma warn -par	/* to turn off >parameter< 'ident' is never used. */
 #  pragma warn -pia	/* to turn off possibly incorrect assignment. 'if (!(x=a))' */
 #  pragma warn -sig	/* to turn off conversion may lose significant digits. */
-# endif
-
-# ifndef _WINSOCK2API_	/* Winsock1 and Winsock 2 conflict. */
-#  include <winsock2.h>
 # endif
 
 # ifndef FD_SETSIZE	/* MSVC 6 is reported to have 64. */
@@ -322,13 +307,7 @@ struct in_addr {
 #endif
 
 /* SOCKET -- must be after the winsock.h #include. */
-#ifdef CIRCLE_WINDOWS
-# define CLOSE_SOCKET(sock)	closesocket(sock)
-  typedef SOCKET		socket_t;
-#else
-# define CLOSE_SOCKET(sock)	close(sock)
-  typedef int			socket_t;
-#endif
+/* Handled by uv_close in comm.c */
 
 #if defined(__cplusplus)	/* C++ */
 #define cpp_extern	extern
@@ -477,111 +456,12 @@ struct in_addr {
    int remove(const char *path);
 #endif
 
-#ifdef NEED_ACCEPT_PROTO
-   int accept(socket_t s, struct sockaddr *addr, int *addrlen);
-#endif
-
-#ifdef NEED_BIND_PROTO
-   int bind(socket_t s, const struct sockaddr *name, int namelen);
-#endif
-
 #ifdef NEED_CHDIR_PROTO
    int chdir(const char *path);
 #endif
 
 #ifdef NEED_CLOSE_PROTO
    int close(int fildes);
-#endif
-
-#ifdef NEED_FCNTL_PROTO
-   int fcntl(int fildes, int cmd, /* arg */ ...);
-#endif
-
-#ifdef NEED_FPUTC_PROTO
-   int fputc(char c, FILE *stream);
-#endif
-
-#ifdef NEED_FPUTS_PROTO
-   int fputs(const char *s, FILE *stream);
-#endif
-
-#ifdef NEED_GETPEERNAME_PROTO
-   int getpeername(socket_t s, struct sockaddr *name, int *namelen);
-#endif
-
-#if defined(HAS_RLIMIT) && defined(NEED_GETRLIMIT_PROTO)
-   int getrlimit(int resource, struct rlimit *rlp);
-#endif
-
-#ifdef NEED_GETSOCKNAME_PROTO
-   int getsockname(socket_t s, struct sockaddr *name, int *namelen);
-#endif
-
-#ifdef NEED_GETTIMEOFDAY_PROTO
-   void gettimeofday(struct timeval *tp, void * );
-#endif
-
-#ifdef NEED_HTONL_PROTO
-   ulong htonl(u_long hostlong);
-#endif
-
-#ifdef NEED_HTONS_PROTO
-   u_short htons(u_short hostshort);
-#endif
-
-#if defined(HAVE_INET_ADDR) && defined(NEED_INET_ADDR_PROTO)
-   unsigned long int inet_addr(const char *cp);
-#endif
-
-#if defined(HAVE_INET_ATON) && defined(NEED_INET_ATON_PROTO)
-   int inet_aton(const char *cp, struct in_addr *inp);
-#endif
-
-#ifdef NEED_INET_NTOA_PROTO
-   char *inet_ntoa(const struct in_addr in);
-#endif
-
-#ifdef NEED_LISTEN_PROTO
-   int listen(socket_t s, int backlog);
-#endif
-
-#ifdef NEED_NTOHL_PROTO
-   u_long ntohl(u_long netlong);
-#endif
-
-#ifdef NEED_PRINTF_PROTO
-   int printf(char *format, ...);
-#endif
-
-#ifdef NEED_READ_PROTO
-   ssize_t read(int fildes, void *buf, size_t nbyte);
-#endif
-
-#ifdef NEED_SELECT_PROTO
-   int select(int nfds, fd_set *readfds, fd_set *writefds,
-          fd_set *exceptfds, struct timeval *timeout);
-#endif
-
-#ifdef NEED_SETITIMER_PROTO
-   int setitimer(int which, const struct itimerval *value,
-          struct itimerval *ovalue);
-#endif
-
-#if defined(HAS_RLIMIT) && defined(NEED_SETRLIMIT_PROTO)
-   int setrlimit(int resource, const struct rlimit *rlp);
-#endif
-
-#ifdef NEED_SETSOCKOPT_PROTO
-   int setsockopt(socket_t s, int level, int optname, const char *optval,
-		  int optlen);
-#endif
-
-#ifdef NEED_SOCKET_PROTO
-   int socket(int domain, int type, int protocol);
-#endif
-
-#ifdef NEED_WRITE_PROTO
-    ssize_t write(int fildes, const void *buf, size_t nbyte);
 #endif
 
 #endif /* NO_LIBRARY_PROTOTYPES */

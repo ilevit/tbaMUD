@@ -168,39 +168,6 @@
 /* Define if you have the malloc library (-lmalloc).  */
 #cmakedefine HAVE_LIBMALLOC
 
-/* Check for a prototype to accept. */
-#cmakedefine NEED_ACCEPT_PROTO
-
-/* Check for a prototype to atoi. */
-#cmakedefine NEED_ATOI_PROTO
-
-/* Check for a prototype to atol. */
-#cmakedefine NEED_ATOL_PROTO
-
-/* Check for a prototype to bind. */
-#cmakedefine NEED_BIND_PROTO
-
-/* Check for a prototype to bzero. */
-#cmakedefine NEED_BZERO_PROTO
-
-/* Check for a prototype to chdir. */
-#cmakedefine NEED_CHDIR_PROTO
-
-/* Check for a prototype to close. */
-#cmakedefine NEED_CLOSE_PROTO
-
-/* Check for a prototype to crypt. */
-#cmakedefine NEED_CRYPT_PROTO
-
-/* Check for a prototype to fclose. */
-#cmakedefine NEED_FCLOSE_PROTO
-
-/* Check for a prototype to fcntl. */
-#cmakedefine NEED_FCNTL_PROTO
-
-/* Check for a prototype to fflush. */
-#cmakedefine NEED_FFLUSH_PROTO
-
 /* Check for a prototype to fprintf. */
 #cmakedefine NEED_FPRINTF_PROTO
 
@@ -222,41 +189,14 @@
 /* Check for a prototype to fwrite. */
 #cmakedefine NEED_FWRITE_PROTO
 
-/* Check for a prototype to getpeername. */
-#cmakedefine NEED_GETPEERNAME_PROTO
-
 /* Check for a prototype to getpid. */
 #cmakedefine NEED_GETPID_PROTO
 
 /* Check for a prototype to getrlimit. */
 #cmakedefine NEED_GETRLIMIT_PROTO
 
-/* Check for a prototype to getsockname. */
-#cmakedefine NEED_GETSOCKNAME_PROTO
-
 /* Check for a prototype to gettimeofday. */
 #cmakedefine NEED_GETTIMEOFDAY_PROTO
-
-/* Check for a prototype to htonl. */
-#cmakedefine NEED_HTONL_PROTO
-
-/* Check for a prototype to htons. */
-#cmakedefine NEED_HTONS_PROTO
-
-/* Check for a prototype to inet_addr. */
-#cmakedefine NEED_INET_ADDR_PROTO
-
-/* Check for a prototype to inet_aton. */
-#cmakedefine NEED_INET_ATON_PROTO
-
-/* Check for a prototype to inet_ntoa. */
-#cmakedefine NEED_INET_NTOA_PROTO
-
-/* Check for a prototype to listen. */
-#cmakedefine NEED_LISTEN_PROTO
-
-/* Check for a prototype to ntohl. */
-#cmakedefine NEED_NTOHL_PROTO
 
 /* Check for a prototype to perror. */
 #cmakedefine NEED_PERROR_PROTO
@@ -276,23 +216,8 @@
 /* Check for a prototype to rewind. */
 #cmakedefine NEED_REWIND_PROTO
 
-/* Check for a prototype to select. */
-#cmakedefine NEED_SELECT_PROTO
-
-/* Check for a prototype to setitimer. */
-#cmakedefine NEED_SETITIMER_PROTO
-
-/* Check for a prototype to setrlimit. */
-#cmakedefine NEED_SETRLIMIT_PROTO
-
-/* Check for a prototype to setsockopt. */
-#cmakedefine NEED_SETSOCKOPT_PROTO
-
 /* Check for a prototype to snprintf. */
 #cmakedefine NEED_SNPRINTF_PROTO
-
-/* Check for a prototype to socket. */
-#cmakedefine NEED_SOCKET_PROTO
 
 /* Check for a prototype to sprintf. */
 #cmakedefine NEED_SPRINTF_PROTO

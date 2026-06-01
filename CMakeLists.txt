@@ -362,13 +362,12 @@ set(PROTO_FUNCTIONS
         unlink
         vsnprintf
         write
-        socket
 )
 
 # ========== libuv check ==========
 find_package(PkgConfig QUIET)
 if (PKG_CONFIG_FOUND)
-    pkg_check_modules(LIBUV REQUIRED libuv>=1.0.0)
+    pkg_check_modules(LIBUV libuv>=1.0.0)
 endif()
 
 if (NOT LIBUV_FOUND)
@@ -383,12 +382,11 @@ if (NOT LIBUV_FOUND)
 endif()
 
 if (NOT LIBUV_FOUND)
-    message(FATAL_ERROR "libuv not found. Please install libuv and ensure it is in your search path, or set LIBUV_INCLUDE_DIR and LIBUV_LIBRARY manually.")
+    message(FATAL_ERROR "libuv not found. This is now a mandatory dependency. Please install libuv (e.g. via vcpkg install libuv) and ensure it is in your search path.")
 endif()
 
 
 # ========== Generate conf.h ==========
-
 # We need a temporary conf.h to check for missing prototypes
 configure_file(
         ${CMAKE_SOURCE_DIR}/src/conf.h.cmake.in

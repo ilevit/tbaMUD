@@ -838,19 +838,22 @@ static void init_game(ush_int local_port)
 static socket_t init_socket(ush_int local_port)
 {
   struct sockaddr_in sa;
+  char addr_str[INET6_ADDRSTRLEN];
   int r;
 
   uv_tcp_init(loop, &mother_handle);
 
-  if (uv_ip4_addr(CONFIG_DFLT_IP ?: "0.0.0.0", local_port, &sa)) {
+  if (uv_ip4_addr(CONFIG_DFLT_IP ? CONFIG_DFLT_IP : "0.0.0.0", local_port, &sa)) {
     log("SYSERR: DFLT_IP of %s appears to be an invalid IP address", CONFIG_DFLT_IP);
     uv_ip4_addr("0.0.0.0", local_port, &sa);
   }
+
   /* Put the address that we've finally decided on into the logs */
-  if (sa.sin_addr.s_addr == htonl(INADDR_ANY))
+  uv_ip4_name(&sa, addr_str, sizeof(addr_str));
+  if (strcmp(addr_str, "0.0.0.0") == 0)
       log("Binding to all IP interfaces on this host.");
   else
-      log("Binding only to IP address %s", inet_ntoa(sa.sin_addr));
+      log("Binding only to IP address %s", addr_str);
 
   uv_tcp_bind(&mother_handle, (const struct sockaddr*)&sa, 0);
   
