@@ -4195,15 +4195,17 @@ ACMD(do_copyover)
 
   /* drop those logging on */
    if (!d->character || d->connected > CON_PLAYING) {
-     write_to_descriptor (d->descriptor, "\n\rSorry, we are rebooting. Come back in a few minutes.\n\r");
+     write_to_descriptor (d, "\n\rSorry, we are rebooting. Come back in a few minutes.\n\r");
      close_socket (d); /* throw'em out */
    } else {
-      fprintf (fp, "%d %ld %s %s %s\n", d->descriptor, GET_PREF(och), GET_NAME(och), d->host, CopyoverGet(d));
+      uv_os_fd_t fd;
+      uv_fileno((const uv_handle_t *)&d->handle, &fd);
+      fprintf (fp, "%d %ld %s %s %s\n", (int)fd, GET_PREF(och), GET_NAME(och), d->host, CopyoverGet(d));
       /* save och */
       GET_LOADROOM(och) = GET_ROOM_VNUM(IN_ROOM(och));
       Crash_rentsave(och,0);
       save_char(och);
-      write_to_descriptor (d->descriptor, buf);
+      write_to_descriptor (d, buf);
     }
   }
 

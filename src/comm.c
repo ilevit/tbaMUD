@@ -154,7 +154,7 @@ static int perform_subst(struct descriptor_data *t, char *orig, char *subst);
 static void record_usage(void);
 static char *make_prompt(struct descriptor_data *point);
 static void check_idle_passwords(void);
-static void init_descriptor (struct descriptor_data *newd, socket_t desc);
+static void init_descriptor (struct descriptor_data *newd);
 
 static void free_bufpool(void);
 static void setup_log(const char *filename, int fd);
@@ -259,8 +259,9 @@ static void on_new_connection(uv_stream_t *server, int status)
     uv_tcp_getpeername(&newd->handle, (struct sockaddr *)&peer, &len);
     
     if (peer.ss_family == AF_INET) {
-      struct sockaddr_in *s = (struct sockaddr_in *)&peer;
-      strncpy(newd->host, inet_ntoa(s->sin_addr), HOST_LENGTH);
+      uv_ip4_name((struct sockaddr_in *)&peer, newd->host, HOST_LENGTH);
+    } else if (peer.ss_family == AF_INET6) {
+      uv_ip6_name((struct sockaddr_in6 *)&peer, newd->host, HOST_LENGTH);
     } else {
       strcpy(newd->host, "unknown");
     }
@@ -272,7 +273,7 @@ static void on_new_connection(uv_stream_t *server, int status)
       return;
     }
 
-    init_descriptor(newd, (socket_t)fd);
+    init_descriptor(newd);
     
     newd->next = descriptor_list;
     descriptor_list = newd;
@@ -312,29 +313,22 @@ static void on_descriptor_close(uv_handle_t *handle)
  * It uses libuv to send the data asynchronously. Returns:
  * >=0  If the write was successfully queued.
  *  -1  If an error was encountered. */
-int write_to_descriptor(socket_t desc, const char *txt)
+int write_to_descriptor(struct descriptor_data *d, const char *txt)
 {
-  struct descriptor_data *d;
   size_t len = strlen(txt);
 
-  if (len == 0)
+  if (len == 0 || !d)
     return 0;
 
-  for (d = descriptor_list; d; d = d->next) {
-    if (d->descriptor == desc) {
-      uv_buf_t buf = uv_buf_init(strdup(txt), len);
-      uv_write_t *req = (uv_write_t *)malloc(sizeof(uv_write_t));
-      req->data = buf.base;
-      if (uv_write(req, (uv_stream_t *)&d->handle, &buf, 1, on_write) != 0) {
-        free(buf.base);
-        free(req);
-        return -1;
-      }
-      return len;
-    }
+  uv_buf_t buf = uv_buf_init(strdup(txt), len);
+  uv_write_t *req = (uv_write_t *)malloc(sizeof(uv_write_t));
+  req->data = buf.base;
+  if (uv_write(req, (uv_stream_t *)&d->handle, &buf, 1, on_write) != 0) {
+    free(buf.base);
+    free(req);
+    return -1;
   }
-
-  return -1;
+  return len;
 }
 
 static void heartbeat_cb(uv_timer_t *handle)
@@ -408,7 +402,7 @@ static void heartbeat_cb(uv_timer_t *handle)
     }
 
     if (!d->has_prompt) {
-      write_to_descriptor(d->descriptor, make_prompt(d));
+      write_to_descriptor(d, make_prompt(d));
       d->has_prompt = TRUE;
     }
   }
@@ -684,16 +678,23 @@ void copyover_recover()
     if (desc == -1)
       break;
 
-    /* Write something, and check if it goes error-free */
-    if (write_to_descriptor (desc, "\n\rRestoring from copyover...\n\r") < 0) {
-      close (desc); /* nope */
-      continue;
-    }
-
     /* create a new descriptor */
     CREATE (d, struct descriptor_data, 1);
     memset ((char *) d, 0, sizeof (struct descriptor_data));
-    init_descriptor (d,desc); /* set up various stuff */
+    
+    /* Initialize libuv handle from raw descriptor */
+    uv_tcp_init(loop, &d->handle);
+    uv_tcp_open(&d->handle, (uv_os_sock_t)desc);
+    d->handle.data = d;
+    uv_read_start((uv_stream_t *)&d->handle, alloc_buffer, on_read);
+
+    init_descriptor (d); /* set up various stuff */
+
+    /* Write something, and check if it goes error-free */
+    if (write_to_descriptor (d, "\n\rRestoring from copyover...\n\r") < 0) {
+      close_socket (d);
+      continue;
+    }
 
     strcpy(d->host, host);
     d->next = descriptor_list;
@@ -725,10 +726,10 @@ void copyover_recover()
 
     /* Player file not found?! */
     if (!fOld) {
-      write_to_descriptor (desc, "\n\rSomehow, your character was lost in the copyover. Sorry.\n\r");
+      write_to_descriptor (d, "\n\rSomehow, your character was lost in the copyover. Sorry.\n\r");
       close_socket (d);
     } else {
-      write_to_descriptor (desc, "\n\rCopyover recovery complete.\n\r");
+      write_to_descriptor (d, "\n\rCopyover recovery complete.\n\r");
       GET_PREF(d->character) = pref;
     
       enter_player_game(d);
@@ -1309,12 +1310,10 @@ static void free_bufpool(void)
   }
 }
 
-/* Initialize a descriptor */
-static void init_descriptor (struct descriptor_data *newd, socket_t desc)
+static void init_descriptor (struct descriptor_data *newd)
 {
   static int last_desc = 0;	/* last descriptor number */
 
-  newd->descriptor = desc;
   newd->idle_tics = 0;
   newd->output = newd->small_outbuf;
   newd->bufspace = SMALL_BUFSIZE - 1;
@@ -1329,7 +1328,6 @@ static void init_descriptor (struct descriptor_data *newd, socket_t desc)
   newd->desc_num = last_desc;
   newd->pProtocol = ProtocolCreate(); /* KaVir's plugin*/
   newd->events = create_list();
-  
 }
 
 /* Send all of the output that we've accumulated for a player out to the
@@ -1365,11 +1363,11 @@ static int process_output(struct descriptor_data *t)
    * CRLF, otherwise send the straight output sans CRLF. */
   if (t->has_prompt && !t->pProtocol->WriteOOB) {
     t->has_prompt = FALSE;
-    result = write_to_descriptor(t->descriptor, i);
+    result = write_to_descriptor(t, i);
     if (result >= 2)
       result -= 2;
   } else
-    result = write_to_descriptor(t->descriptor, osb);
+    result = write_to_descriptor(t, osb);
 
   if (result < 0) {	/* Oops, fatal error. Bye! */
 //    close_socket(t); // close_socket is called after return of negative result
@@ -1480,7 +1478,7 @@ static int process_input(struct descriptor_data *t)
       char buffer[MAX_INPUT_LENGTH + 64];
 
       snprintf(buffer, sizeof(buffer), "Line too long.  Truncated to:\r\n%s\r\n", tmp);
-      if (write_to_descriptor(t->descriptor, buffer) < 0)
+      if (write_to_descriptor(t, buffer) < 0)
 	return (-1);
     }
     if (t->snoop_by)

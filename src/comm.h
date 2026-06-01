@@ -48,7 +48,7 @@ char * act(const char *str, int hide_invisible, struct char_data *ch, struct obj
 
 /* I/O functions */
 void	write_to_q(const char *txt, struct txt_q *queue, int aliased);
-int	write_to_descriptor(socket_t desc, const char *txt);
+int	write_to_descriptor(struct descriptor_data *d, const char *txt);
 size_t	write_to_output(struct descriptor_data *d, const char *txt, ...) __attribute__ ((format (printf, 2, 3)));
 size_t	vwrite_to_output(struct descriptor_data *d, const char *format, va_list args);
 
@@ -71,7 +71,7 @@ extern int scheck;
 extern FILE *logfile;
 extern unsigned long pulse;
 extern ush_int port;
-extern socket_t mother_desc;
+extern uv_os_sock_t mother_desc;
 extern int next_tick;
 
 #endif /* _COMM_H_ */
