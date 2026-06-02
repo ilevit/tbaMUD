@@ -4214,7 +4214,7 @@ ACMD(do_copyover)
 
   /* exec - descriptors are inherited */
   sprintf (buf, "%d", port);
-  sprintf (buf2, "-C%d", mother_desc);
+  sprintf (buf2, "-C%lld", (long long) mother_desc);
 
   /* Ugh, seems it is expected we are 1 step above lib - this may be dangerous! */
   if(chdir ("..") != 0) {

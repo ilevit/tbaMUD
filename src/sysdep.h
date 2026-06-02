@@ -265,8 +265,6 @@ struct in_addr {
 
 #include <uv.h>
 /* libuv provides its own socket and file descriptor types */
-typedef uv_os_sock_t socket_t;
-#define CLOSE_SOCKET(sock) /* Handled by uv_close in comm.c */
 
 #if defined(CIRCLE_WINDOWS)	/* Definitions for Win32 */
 

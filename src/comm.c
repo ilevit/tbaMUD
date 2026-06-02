@@ -145,7 +145,7 @@ static RETSIGTYPE hupsig(int sig);
 static int get_from_q(struct txt_q *queue, char *dest, int *aliased);
 static void init_game(ush_int port);
 static void signal_setup(void);
-static socket_t init_socket(ush_int port);
+static uv_os_sock_t init_socket(ush_int port);
 static int get_max_players(void);
 static int process_output(struct descriptor_data *t);
 static int process_input(struct descriptor_data *t);
@@ -237,10 +237,6 @@ static void on_new_connection(uv_stream_t *server, int status)
   uv_tcp_init(loop, &newd->handle);
   if (uv_accept(server, (uv_stream_t *)&newd->handle) == 0) {
     newd->handle.data = newd;
-
-    /* Get the raw fd for legacy code compatibility */
-    uv_os_fd_t fd;
-    uv_fileno((const uv_handle_t *)&newd->handle, &fd);
 
     if (sockets_connected >= CONFIG_MAX_PLAYING) {
       const char *msg = "Sorry, the game is full right now... please try again later!\r\n";
@@ -782,7 +778,7 @@ static void init_game(ush_int local_port)
   /* If copyover mother_desc is already set up */
   if (!fCopyOver) {
      log ("Opening mother connection.");
-     mother_desc = init_socket (local_port);
+     mother_desc = init_socket(local_port);
   } else {
     /* Need to adapt copyover socket to libuv handle */
     uv_tcp_init(loop, &mother_handle);
@@ -835,7 +831,7 @@ static void init_game(ush_int local_port)
 
 /* init_socket sets up the mother descriptor - creates the socket, sets
  * its options up, binds it, and listens. */
-static socket_t init_socket(ush_int local_port)
+static uv_os_sock_t init_socket(ush_int local_port)
 {
   struct sockaddr_in sa;
   char addr_str[INET6_ADDRSTRLEN];
@@ -866,7 +862,7 @@ static socket_t init_socket(ush_int local_port)
   /* uv_fileno returns the fd if it's open */
   uv_os_fd_t fd;
   uv_fileno((const uv_handle_t *)&mother_handle, &fd);
-  return (socket_t)fd;
+  return (uv_os_sock_t)fd;
 }
 
 static int get_max_players(void)
