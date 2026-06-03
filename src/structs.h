@@ -1111,6 +1111,7 @@ struct descriptor_data
 
   uv_tcp_t handle;          /**< libuv TCP handle */
   uv_write_t write_req;     /**< libuv write request */
+  uv_getnameinfo_t *dns_req; /**< libuv DNS getnameinfo request */
 };
 
 /* other miscellaneous structures */

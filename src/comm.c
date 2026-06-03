@@ -131,6 +131,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf);
 static void on_write(uv_write_t *req, int status);
 static void heartbeat_cb(uv_timer_t *handle);
 static void on_signal(uv_signal_t *handle, int signum);
+static void on_dns_resolved(uv_getnameinfo_t *req, int status, const char *hostname, const char *service);
 
 /* static local function prototypes (current file scope only) */
 static RETSIGTYPE reread_wizlists(int sig);
@@ -217,6 +218,28 @@ static void on_reject_write(uv_write_t *req, int status)
   free(req);
 }
 
+static void on_dns_resolved(uv_getnameinfo_t *req, int status, const char *hostname, const char *service)
+{
+  struct descriptor_data *d = (struct descriptor_data *)req->data;
+
+  if (d) {
+    if (status == 0) {
+      strncpy(d->host, hostname, HOST_LENGTH);
+      d->host[HOST_LENGTH] = '\0';
+      log("DNS resolved: descriptor %d -> %s", d->desc_num, d->host);
+
+      if (isbanned(d->host) == BAN_ALL) {
+        log("Connection attempt denied from banned host %s (resolved)", d->host);
+        STATE(d) = CON_CLOSE;
+      }
+    } else if (status != UV_ECANCELED) {
+      log("DNS resolution failed for descriptor %d: %s", d->desc_num, uv_strerror(status));
+    }
+    d->dns_req = NULL;
+  }
+  free(req);
+}
+
 static void on_new_connection(uv_stream_t *server, int status)
 {
   if (status < 0) {
@@ -273,6 +296,23 @@ static void on_new_connection(uv_stream_t *server, int status)
     descriptor_list = newd;
 
     uv_read_start((uv_stream_t *)&newd->handle, alloc_buffer, on_read);
+
+    /* Start reverse DNS lookup asynchronously if the address is known */
+    if (strcmp(newd->host, "unknown") != 0) {
+      uv_getnameinfo_t *dns_req = (uv_getnameinfo_t *)malloc(sizeof(uv_getnameinfo_t));
+      if (dns_req) {
+        dns_req->data = newd;
+        newd->dns_req = dns_req;
+        int r = uv_getnameinfo(loop, dns_req, on_dns_resolved, (const struct sockaddr *)&peer, NI_NAMEREQD);
+        if (r != 0) {
+          log("DNS: uv_getnameinfo failed to start for descriptor %d: %s", newd->desc_num, uv_strerror(r));
+          free(dns_req);
+          newd->dns_req = NULL;
+        } else {
+          log("DNS: started reverse DNS resolution for descriptor %d (IP: %s)", newd->desc_num, newd->host);
+        }
+      }
+    }
     
     if (CONFIG_PROTOCOL_NEGOTIATION) {
       NEW_EVENT(ePROTOCOLS, newd, NULL, 1.5 * PASSES_PER_SEC);
@@ -1325,6 +1365,7 @@ static void init_descriptor (struct descriptor_data *newd)
   newd->desc_num = last_desc;
   newd->pProtocol = ProtocolCreate(); /* KaVir's plugin*/
   newd->events = create_list();
+  newd->dns_req = NULL;
 }
 
 /* Send all of the output that we've accumulated for a player out to the
@@ -1596,6 +1637,12 @@ void close_socket(struct descriptor_data *d)
   struct descriptor_data *temp;
 
   REMOVE_FROM_LIST(d, descriptor_list, next);
+  
+  if (d->dns_req) {
+    d->dns_req->data = NULL;
+    uv_cancel((uv_req_t *)d->dns_req);
+    d->dns_req = NULL;
+  }
   
   if (!uv_is_closing((uv_handle_t *)&d->handle)) {
     uv_close((uv_handle_t *)&d->handle, on_descriptor_close);
