@@ -117,8 +117,6 @@ uv_signal_t sigusr2_handle;
 /* static local global variable declarations (current file scope only) */
 static struct txt_block *bufpool = 0;  /* pool of large output buffers */
 static int max_players = 0;   /* max descriptors available */
-static int tics_passed = 0;     /* for extern checkpointing */
-static struct timeval null_time; /* zero-valued time structure */
 static byte reread_wizlist;   /* signal: SIGUSR1 */
 static byte emergency_unban;  /* signal: SIGUSR2 */
 
