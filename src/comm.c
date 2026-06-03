@@ -851,8 +851,43 @@ static void init_game(ush_int local_port)
   while (descriptor_list)
     close_socket(descriptor_list);
 
-  uv_close((uv_handle_t *)&mother_handle, NULL);
+  log("Closing main server connection.");
+  if (!uv_is_closing((uv_handle_t *)&mother_handle)) {
+    uv_close((uv_handle_t *)&mother_handle, NULL);
+  }
+
+  log("Closing heartbeat timer.");
+  if (!uv_is_closing((uv_handle_t *)&heartbeat_timer)) {
+    uv_close((uv_handle_t *)&heartbeat_timer, NULL);
+  }
+
+  log("Closing signal handles.");
+  if (!uv_is_closing((uv_handle_t *)&sigint_handle)) {
+    uv_close((uv_handle_t *)&sigint_handle, NULL);
+  }
+  if (!uv_is_closing((uv_handle_t *)&sigterm_handle)) {
+    uv_close((uv_handle_t *)&sigterm_handle, NULL);
+  }
+#if defined(CIRCLE_UNIX)
+  if (!uv_is_closing((uv_handle_t *)&sighup_handle)) {
+    uv_close((uv_handle_t *)&sighup_handle, NULL);
+  }
+  if (!uv_is_closing((uv_handle_t *)&sigusr1_handle)) {
+    uv_close((uv_handle_t *)&sigusr1_handle, NULL);
+  }
+  if (!uv_is_closing((uv_handle_t *)&sigusr2_handle)) {
+    uv_close((uv_handle_t *)&sigusr2_handle, NULL);
+  }
+#endif
+
+  log("Running event loop to process close callbacks.");
   uv_run(loop, UV_RUN_DEFAULT); /* Run one more time to let closes finish */
+
+  log("Closing default event loop.");
+  int r = uv_loop_close(loop);
+  if (r != 0) {
+    log("Warning: uv_loop_close returned %s", uv_err_name(r));
+  }
 
   if (circle_reboot != 2)
     save_all();
