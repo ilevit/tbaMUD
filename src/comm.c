@@ -224,8 +224,7 @@ static void on_dns_resolved(uv_getnameinfo_t *req, int status, const char *hostn
 
   if (d) {
     if (status == 0) {
-      strncpy(d->host, hostname, HOST_LENGTH);
-      d->host[HOST_LENGTH] = '\0';
+      strlcpy(d->host, hostname, sizeof(d->host));
       log("DNS resolved: descriptor %d -> %s", d->desc_num, d->host);
 
       if (isbanned(d->host) == BAN_ALL) {
@@ -280,9 +279,8 @@ static void on_new_connection(uv_stream_t *server, int status)
     } else if (peer.ss_family == AF_INET6) {
       uv_ip6_name((struct sockaddr_in6 *)&peer, newd->host, HOST_LENGTH);
     } else {
-      strcpy(newd->host, "unknown");
+      strlcpy(newd->host, "unknown", sizeof(newd->host));
     }
-    newd->host[HOST_LENGTH] = '\0';
 
     if (isbanned(newd->host) == BAN_ALL) {
       log("Connection attempt denied from banned host %s", newd->host);
@@ -730,7 +728,7 @@ void copyover_recover()
       continue;
     }
 
-    strcpy(d->host, host);
+    strlcpy(d->host, host, sizeof(d->host));
     d->next = descriptor_list;
     descriptor_list = d;
 
@@ -1649,8 +1647,7 @@ static int perform_subst(struct descriptor_data *t, char *orig, char *subst)
   /* now, we construct the new string for output. */
 
   /* first, everything in the original, up to the string to be replaced */
-  strncpy(newsub, orig, strpos - orig);	/* strncpy: OK (newsub:MAX_INPUT_LENGTH+5 > orig:MAX_INPUT_LENGTH) */
-  newsub[strpos - orig] = '\0';
+  strlcpy(newsub, orig, MIN(sizeof(newsub), (size_t)(strpos - orig + 1)));
 
   /* now, the replacement string */
   strncat(newsub, second, MAX_INPUT_LENGTH - strlen(newsub) - 1);	/* strncpy: OK */
