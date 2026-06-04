@@ -1,0 +1,7 @@
+{
+  "name": "tbamud",
+  "version": "1.0.0",
+  "dependencies": [
+    "libuv"
+  ]
+}
