@@ -297,7 +297,7 @@ void do_sstat_object(char_data *ch, obj_data *j);
 void do_sstat_character(char_data *ch, char_data *k);
 void add_trigger(struct script_data *sc, trig_data *t, int loc);
 void script_vlog(const char *format, va_list args);
-void script_log(const char *format, ...) __attribute__ ((format (printf, 1, 2)));
+void script_log(const char *format, ...) TBA_ATTR((format (printf, 1, 2)));
 char *matching_quote(char *p);
 struct room_data *dg_room_of_obj(struct obj_data *obj);
 bool check_flags_by_name_ar(int *array, int numflags, char *search, const char *namelist[]);

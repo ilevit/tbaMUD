@@ -253,6 +253,12 @@ struct in_addr {
 # define strn_cmp strnicmp
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+# define TBA_ATTR(x) __attribute__(x)
+#else
+# define TBA_ATTR(x)
+#endif
+
 #if defined(__MWERKS__)
 # define isascii(c)	(((c) & ~0x7f) == 0)	/* So easy to have, but ... */
 #endif

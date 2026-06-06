@@ -36,10 +36,10 @@
 
 /* Public functions made available from utils.c. Documentation for all functions
  * are made available with the function definition. */
-void basic_mud_log(const char *format, ...) __attribute__ ((format (printf, 1, 2)));
+void basic_mud_log(const char *format, ...) TBA_ATTR((format (printf, 1, 2)));
 void basic_mud_vlog(const char *format, va_list args);
 int touch(const char *path);
-void mudlog(int type, int level, int file, const char *str, ...) __attribute__ ((format (printf, 4, 5)));
+void mudlog(int type, int level, int file, const char *str, ...) TBA_ATTR((format (printf, 4, 5)));
 int	rand_number(int from, int to);
 int	dice(int number, int size);
 size_t	sprintbit(bitvector_t vektor, const char *names[], char *result, size_t reslen);

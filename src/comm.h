@@ -18,19 +18,13 @@
 
 /* comm.c */
 void close_socket(struct descriptor_data *d);
-void game_info(const char *messg, ...) __attribute__ ((format (printf, 1, 2)));
-size_t send_to_char(struct char_data *ch, const char *messg, ...) __attribute__
-    ((format (printf, 2, 3)));
-void send_to_all(const char *messg, ...) __attribute__ ((format (printf, 1,
-    2)));
-void send_to_room(room_rnum room, const char *messg, ...) __attribute__ ((format
-    (printf, 2, 3)));
-void send_to_outdoor(const char *messg, ...) __attribute__ ((format (printf, 1,
-    2)));
-void send_to_group(struct char_data *ch, struct group_data *group, const char * msg, ...) __attribute__ ((format
-    (printf, 3, 4)));
-void send_to_range(room_vnum start, room_vnum finish, const char *messg, ...)
-    __attribute__ ((format (printf, 3, 4)));
+void game_info(const char *messg, ...) TBA_ATTR((format (printf, 1, 2)));
+size_t send_to_char(struct char_data *ch, const char *messg, ...) TBA_ATTR((format (printf, 2, 3)));
+void send_to_all(const char *messg, ...) TBA_ATTR((format (printf, 1, 2)));
+void send_to_room(room_rnum room, const char *messg, ...) TBA_ATTR((format (printf, 2, 3)));
+void send_to_outdoor(const char *messg, ...) TBA_ATTR((format (printf, 1, 2)));
+void send_to_group(struct char_data *ch, struct group_data *group, const char * msg, ...) TBA_ATTR((format (printf, 3, 4)));
+void send_to_range(room_vnum start, room_vnum finish, const char *messg, ...) TBA_ATTR((format (printf, 3, 4)));
 
 /* Act type settings and flags */
 #define TO_ROOM     1   /**< act() type: to everyone in room, except ch. */
@@ -49,7 +43,7 @@ char * act(const char *str, int hide_invisible, struct char_data *ch, struct obj
 /* I/O functions */
 void	write_to_q(const char *txt, struct txt_q *queue, int aliased);
 int	write_to_descriptor(struct descriptor_data *d, const char *txt);
-size_t	write_to_output(struct descriptor_data *d, const char *txt, ...) __attribute__ ((format (printf, 2, 3)));
+size_t	write_to_output(struct descriptor_data *d, const char *txt, ...) TBA_ATTR((format (printf, 2, 3)));
 size_t	vwrite_to_output(struct descriptor_data *d, const char *format, va_list args);
 
 typedef RETSIGTYPE sigfunc(int);
