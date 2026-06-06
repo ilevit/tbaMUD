@@ -1306,8 +1306,7 @@ EVENTFUNC(get_protocols)
 {
   struct descriptor_data *d;
   struct mud_event_data *pMudEvent;
-  char buf[MAX_STRING_LENGTH];
-  size_t len;
+  sds buf = sdsempty();
 
   if (event_obj == NULL)
     return 0;
@@ -1318,20 +1317,21 @@ EVENTFUNC(get_protocols)
   /* Clear extra white space from the "protocol scroll" */
   write_to_output(d, "[H[J");
 
-  len = snprintf(buf, MAX_STRING_LENGTH,   "\tO[\toClient\tO] \tw%s\tn | ", d->pProtocol->pVariables[eMSDP_CLIENT_ID]->pValueString);
+  buf = sdscatfmt(buf, "\tO[\toClient\tO] \tw%s\tn | ", d->pProtocol->pVariables[eMSDP_CLIENT_ID]->pValueString);
 
   if (d->pProtocol->pVariables[eMSDP_XTERM_256_COLORS]->ValueInt)
-    len += snprintf(buf + len, MAX_STRING_LENGTH - len, "\tO[\toColors\tO] \tw256\tn | ");
+    buf = sdscat(buf, "\tO[\toColors\tO] \tw256\tn | ");
   else if (d->pProtocol->pVariables[eMSDP_ANSI_COLORS]->ValueInt)
-    len += snprintf(buf + len, MAX_STRING_LENGTH - len, "\tO[\toColors\tO] \twAnsi\tn | ");
+    buf = sdscat(buf, "\tO[\toColors\tO] \twAnsi\tn | ");
   else
-    len += snprintf(buf + len, MAX_STRING_LENGTH - len, "[Colors] No Color | ");
+    buf = sdscat(buf, "[Colors] No Color | ");
  
-  len += snprintf(buf + len, MAX_STRING_LENGTH - len,   "\tO[\toMXP\tO] \tw%s\tn | ", d->pProtocol->bMXP ? "Yes" : "No");
-  len += snprintf(buf + len, MAX_STRING_LENGTH - len,   "\tO[\toMSDP\tO] \tw%s\tn | ", d->pProtocol->bMSDP ? "Yes" : "No");
-  snprintf(buf + len, MAX_STRING_LENGTH - len,   "\tO[\toATCP\tO] \tw%s\tn\r\n\r\n", d->pProtocol->bATCP ? "Yes" : "No");
+  buf = sdscatfmt(buf,   "\tO[\toMXP\tO] \tw%s\tn | ", d->pProtocol->bMXP ? "Yes" : "No");
+  buf = sdscatfmt(buf, "\tO[\toMSDP\tO] \tw%s\tn | ", d->pProtocol->bMSDP ? "Yes" : "No");
+  buf = sdscatfmt(buf,   "\tO[\toATCP\tO] \tw%s\tn\r\n\r\n", d->pProtocol->bATCP ? "Yes" : "No");
    
   write_to_output(d, buf, 0);
+  sdsfree(buf);
     
   write_to_output(d, GREETINGS, 0); 
   STATE(d) = CON_GET_NAME;

@@ -13,6 +13,7 @@
 #define _STRUCTS_H_
 
 #include <uv.h>
+#include "sds.h"
 #include "protocol.h" /* Kavir Plugin*/
 #include "lists.h"
 
@@ -1091,13 +1092,9 @@ struct descriptor_data
   int has_prompt;           /**< is the user at a prompt?             */
   char inbuf[MAX_RAW_INPUT_LENGTH];  /**< buffer for raw input		*/
   char last_input[MAX_INPUT_LENGTH]; /**< the last input			*/
-  char small_outbuf[SMALL_BUFSIZE];  /**< standard output buffer		*/
-  char *output;             /**< ptr to the current output buffer	*/
   char **history;           /**< History of commands, for ! mostly.	*/
   int history_pos;          /**< Circular array position.		*/
-  int bufptr;               /**< ptr to end of current output		*/
-  int bufspace;             /**< space left in the output buffer	*/
-  struct txt_block *large_outbuf; /**< ptr to large buffer, if we need it */
+  sds outbuf;
   struct txt_q input;       /**< q of unprocessed input		*/
   struct char_data *character; /**< linked to char			*/
   struct char_data *original;  /**< original char if switched		*/

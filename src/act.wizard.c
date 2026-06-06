@@ -2663,8 +2663,7 @@ ACMD(do_show)
 	"  %5d objects          %5d prototypes\r\n"
 	"  %5d rooms            %5d zones\r\n"
   "  %5d triggers         %5d shops\r\n"
-  "  %5d large bufs       %5d autoquests\r\n"
-	"  %5d buf switches     %5d overflows\r\n"
+  "  %5d autoquests\r\n"
 	"  %5d lists\r\n",
 	i, con,
 	top_of_p_table + 1,
@@ -2672,8 +2671,7 @@ ACMD(do_show)
 	k, top_of_objt + 1,
 	top_of_world + 1, top_of_zone_table + 1,
 	top_of_trigt + 1, top_shop + 1,
-	buf_largecount, total_quests,
-	buf_switches, buf_overflows, global_lists->iSize
+	total_quests, global_lists->iSize
 	);
     break;
 

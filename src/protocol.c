@@ -36,7 +36,7 @@ static void Write( descriptor_t *apDescriptor, const char *apData )
 {
    if ( apDescriptor != NULL)
    {
-      if ( apDescriptor->pProtocol->WriteOOB > 0 || *(apDescriptor->output) == '\0' )
+      if ( apDescriptor->pProtocol->WriteOOB > 0 || (apDescriptor->outbuf && *apDescriptor->outbuf == '\0') )
       {
          apDescriptor->pProtocol->WriteOOB = 2;
       }

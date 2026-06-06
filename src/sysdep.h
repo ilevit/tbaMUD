@@ -253,10 +253,6 @@ struct in_addr {
 # define strn_cmp strnicmp
 #endif
 
-#if !defined(__GNUC__)
-# define __attribute__(x)	/* nothing */
-#endif
-
 #if defined(__MWERKS__)
 # define isascii(c)	(((c) & ~0x7f) == 0)	/* So easy to have, but ... */
 #endif
@@ -465,4 +461,3 @@ struct in_addr {
 #endif /* NO_LIBRARY_PROTOTYPES */
 
 #endif /* _SYSDEP_H_ */
-

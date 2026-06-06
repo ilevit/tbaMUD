@@ -91,9 +91,6 @@ extern time_t newsmod;
 
 /* locally defined globals, used externally */
 struct descriptor_data *descriptor_list = NULL;   /* master desc list */
-int buf_largecount = 0;   /* # of large buffers which exist */
-int buf_overflows = 0;    /* # of overflows of output */
-int buf_switches = 0;     /* # of switches from small to large buf */
 int circle_shutdown = 0;  /* clean shutdown */
 int circle_reboot = 0;    /* reboot the game after a shutdown */
 int no_specials = 0;      /* Suppress ass. of special routines */
@@ -115,7 +112,6 @@ uv_signal_t sigusr1_handle;
 uv_signal_t sigusr2_handle;
 
 /* static local global variable declarations (current file scope only) */
-static struct txt_block *bufpool = 0;  /* pool of large output buffers */
 static int max_players = 0;   /* max descriptors available */
 static byte reread_wizlist;   /* signal: SIGUSR1 */
 static byte emergency_unban;  /* signal: SIGUSR2 */
@@ -155,7 +151,6 @@ static char *make_prompt(struct descriptor_data *point);
 static void check_idle_passwords(void);
 static void init_descriptor (struct descriptor_data *newd);
 
-static void free_bufpool(void);
 static void setup_log(const char *filename, int fd);
 static int open_logfile(const char *filename, FILE *stderr_fp);
 #if defined(POSIX)
@@ -425,7 +420,7 @@ static void heartbeat_cb(uv_timer_t *handle)
   for (d = descriptor_list; d; d = next_d) {
     next_d = d->next;
     
-    if (*(d->output)) {
+    if (sdslen(d->outbuf) > 0) {
       if (process_output(d) < 0) {
         close_socket(d);
         continue;
@@ -632,7 +627,6 @@ int main(int argc, char **argv)
 
   if (!scheck) {
     log("Clearing other memory.");
-    free_bufpool();         /* comm.c */
     free_player_index();    /* players.c */
     free_messages();        /* fight.c */
     free_text_files();      /* db.c */
@@ -1274,10 +1268,9 @@ static int get_from_q(struct txt_q *queue, char *dest, int *aliased)
 /* Empty the queues before closing connection */
 static void flush_queues(struct descriptor_data *d)
 {
-  if (d->large_outbuf) {
-    d->large_outbuf->next = bufpool;
-    bufpool = d->large_outbuf;
-  }
+  if (d->outbuf)
+    sdsclear(d->outbuf);
+
   while (d->input.head) {
     struct txt_block *tmp = d->input.head;
     d->input.head = d->input.head->next;
@@ -1302,94 +1295,34 @@ size_t write_to_output(struct descriptor_data *t, const char *txt, ...)
 /* Add a new string to a player's output queue. */
 size_t vwrite_to_output(struct descriptor_data *t, const char *format, va_list args)
 {
-  const char *text_overflow = "\r\nOVERFLOW\r\n";
   static char txt[MAX_STRING_LENGTH];
-  size_t wantsize;
   int size;
 
-  /* if we're in the overflow state already, ignore this new output */
-  if (t->bufspace == 0)
-    return (0);
+  size = vsnprintf(txt, sizeof(txt), format, args);
 
-  wantsize = size = vsnprintf(txt, sizeof(txt), format, args);
+  if (size < 0)
+    return 0;
 
-  strcpy(txt, ProtocolOutput( t, txt, (int*)&wantsize )); /* <--- Add this line */
-  size = wantsize;                    /* <--- Add this line */
-  if ( t->pProtocol->WriteOOB > 0 )   /* <--- Add this line */
-    --t->pProtocol->WriteOOB;         /* <--- Add this line */
-
-  /* If exceeding the size of the buffer, truncate it for the overflow message */
-  if (size < 0 || wantsize >= sizeof(txt)) {
+  if (size >= (int)sizeof(txt))
     size = sizeof(txt) - 1;
-    strcpy(txt + size - strlen(text_overflow), text_overflow);	/* strcpy: OK */
-  }
 
-  /* If the text is too big to fit into even a large buffer, truncate
-   * the new text to make it fit.  (This will switch to the overflow
-   * state automatically because t->bufspace will end up 0.) */
-  if (size + t->bufptr + 1 > LARGE_BUFSIZE) {
-    size = LARGE_BUFSIZE - t->bufptr - 1;
-    txt[size] = '\0';
-    buf_overflows++;
-  }
+  char *prot_txt = ProtocolOutput(t, txt, &size);
+  
+  if (t->pProtocol->WriteOOB > 0)
+    --t->pProtocol->WriteOOB;
 
-  /* If we have enough space, just write to buffer and that's it! If the
-   * text just barely fits, then it's switched to a large buffer instead. */
-  if (t->bufspace > size) {
-    strcpy(t->output + t->bufptr, txt);	/* strcpy: OK (size checked above) */
-    t->bufspace -= size;
-    t->bufptr += size;
-    return (t->bufspace);
-  }
+  t->outbuf = sdscatlen(t->outbuf, prot_txt, size);
 
-  buf_switches++;
-
-  /* if the pool has a buffer in it, grab it */
-  if (bufpool != NULL) {
-    t->large_outbuf = bufpool;
-    bufpool = bufpool->next;
-  } else {			/* else create a new one */
-    CREATE(t->large_outbuf, struct txt_block, 1);
-    CREATE(t->large_outbuf->text, char, LARGE_BUFSIZE);
-    buf_largecount++;
-  }
-
-  strcpy(t->large_outbuf->text, t->output);	/* strcpy: OK (size checked previously) */
-  t->output = t->large_outbuf->text;	/* make big buffer primary */
-  strcat(t->output, txt);	/* strcat: OK (size checked) */
-
-  /* set the pointer for the next write */
-  t->bufptr = strlen(t->output);
-
-  /* calculate how much space is left in the buffer */
-  t->bufspace = LARGE_BUFSIZE - 1 - t->bufptr;
-
-  return (t->bufspace);
+  return sdslen(t->outbuf);
 }
 
-static void free_bufpool(void)
-{
-  struct txt_block *tmp;
-
-  while (bufpool) {
-    tmp = bufpool->next;
-    if (bufpool->text)
-      free(bufpool->text);
-    free(bufpool);
-    bufpool = tmp;
-  }
-}
-
-static void init_descriptor (struct descriptor_data *newd)
+static void init_descriptor(struct descriptor_data *newd)
 {
   static int last_desc = 0;	/* last descriptor number */
 
   newd->idle_tics = 0;
-  newd->output = newd->small_outbuf;
-  newd->bufspace = SMALL_BUFSIZE - 1;
+  newd->outbuf = sdsempty();
   newd->login_time = time(0);
-  *newd->output = '\0';
-  newd->bufptr = 0;
   newd->has_prompt = 1;  /* prompt is part of greetings */
   STATE(newd) = CONFIG_PROTOCOL_NEGOTIATION ? CON_GET_PROTOCOL : CON_GET_NAME;
   CREATE(newd->history, char *, HISTORY_SIZE);
@@ -1402,88 +1335,51 @@ static void init_descriptor (struct descriptor_data *newd)
 }
 
 /* Send all of the output that we've accumulated for a player out to the
- * player's descriptor. 32 byte GARBAGE_SPACE in MAX_SOCK_BUF used for:
- *	 2 bytes: prepended \r\n
- *	14 bytes: overflow message
- *	 2 bytes: extra \r\n for non-comapct
- *      14 bytes: unused */
+ * player's descriptor. */
 static int process_output(struct descriptor_data *t)
 {
-  char i[MAX_SOCK_BUF], *osb = i + 2;
   int result;
+  sds to_send;
 
-  /* we may need this \r\n for later -- see below */
-  strcpy(i, "\r\n");	/* strcpy: OK (for 'MAX_SOCK_BUF >= 3') */
+  if (sdslen(t->outbuf) == 0 && !t->has_prompt)
+    return 0;
 
-  /* now, append the 'real' output */
-  strcpy(osb, t->output);	/* strcpy: OK (t->output:LARGE_BUFSIZE < osb:MAX_SOCK_BUF-2) */
+  to_send = sdsempty();
 
-  /* if we're in the overflow state, notify the user */
-  if (t->bufspace == 0)
-    strcat(osb, "**OVERFLOW**\r\n");	/* strcpy: OK (osb:MAX_SOCK_BUF-2 reserves space) */
-
-  /* add the extra CRLF if the person isn't in compact mode */
-  if (STATE(t) == CON_PLAYING && t->character && !IS_NPC(t->character) && !PRF_FLAGGED(t->character, PRF_COMPACT))
-    if ( !t->pProtocol->WriteOOB ) 
-      strcat(osb, "\r\n");	/* strcpy: OK (osb:MAX_SOCK_BUF-2 reserves space) */
-
-  if (!t->pProtocol->WriteOOB) /* add a prompt */
-    strcat(i, make_prompt(t));	/* strcpy: OK (i:MAX_SOCK_BUF reserves space) */
-
-  /* now, send the output.  If this is an 'interruption', use the prepended
-   * CRLF, otherwise send the straight output sans CRLF. */
   if (t->has_prompt && !t->pProtocol->WriteOOB) {
+    to_send = sdscat(to_send, "\r\n");
     t->has_prompt = FALSE;
-    result = write_to_descriptor(t, i);
-    if (result >= 2)
-      result -= 2;
-  } else
-    result = write_to_descriptor(t, osb);
-
-  if (result < 0) {	/* Oops, fatal error. Bye! */
-//    close_socket(t); // close_socket is called after return of negative result
-    return (-1);
-  } else if (result == 0)	/* Socket buffer full. Try later. */
-    return (0);
-
-  /* Handle snooping: prepend "% " and send to snooper. */
-  if (t->snoop_by)
-    write_to_output(t->snoop_by, "%% %*s%%%%", result, t->output);
-
-  /* The common case: all saved output was handed off to the kernel buffer. */
-  if (result >= t->bufptr) {
-    /* If we were using a large buffer, put the large buffer on the buffer pool
-     * and switch back to the small one. */
-    if (t->large_outbuf) {
-      t->large_outbuf->next = bufpool;
-      bufpool = t->large_outbuf;
-      t->large_outbuf = NULL;
-      t->output = t->small_outbuf;
-    }
-    /* reset total bufspace back to that of a small buffer */
-    t->bufspace = SMALL_BUFSIZE - 1;
-    t->bufptr = 0;
-    *(t->output) = '\0';
-
-    /* If the overflow message or prompt were partially written, try to save
-     * them. There will be enough space for them if this is true.  'result'
-     * is effectively unsigned here anyway. */
-    if ((unsigned int)result < strlen(osb)) {
-      size_t savetextlen = strlen(osb + result);
-
-      strcat(t->output, osb + result);
-      t->bufptr   -= savetextlen;
-      t->bufspace += savetextlen;
-    }
-
-  } else {
-    /* Not all data in buffer sent.  result < output buffersize. */
-    strcpy(t->output, t->output + result);	/* strcpy: OK (overlap) */
-    t->bufptr   -= result;
-    t->bufspace += result;
   }
 
-  return (result);
+  to_send = sdscatsds(to_send, t->outbuf);
+
+  if (STATE(t) == CON_PLAYING && t->character && !IS_NPC(t->character) && !PRF_FLAGGED(t->character, PRF_COMPACT)) {
+    if (!t->pProtocol->WriteOOB)
+      to_send = sdscat(to_send, "\r\n");
+  }
+
+  if (!t->pProtocol->WriteOOB)
+    to_send = sdscat(to_send, make_prompt(t));
+
+  if (sdslen(to_send) == 0) {
+    sdsfree(to_send);
+    return 0;
+  }
+
+  result = write_to_descriptor(t, to_send);
+  
+  if (result < 0) {
+    sdsfree(to_send);
+    return -1;
+  }
+
+  if (t->snoop_by && sdslen(t->outbuf) > 0)
+    write_to_output(t->snoop_by, "%% %s", t->outbuf);
+
+  sdsclear(t->outbuf);
+  sdsfree(to_send);
+
+  return result;
 }
 
 /* ASSUMPTION: There will be no newlines in the raw input buffer when this
@@ -1740,6 +1636,9 @@ void close_socket(struct descriptor_data *d)
   if (d->showstr_count)
     free(d->showstr_vector);
   
+  if (d->outbuf)
+    sdsfree(d->outbuf);
+
   /* KaVir's plugin*/
   ProtocolDestroy( d->pProtocol );
  
