@@ -1793,7 +1793,7 @@ ACMD(do_wizlock)
 
 ACMD(do_date)
 {
-  char timestr[25];
+  char timestr[MAX_TIMESTR_LENGTH];
   time_t mytime;
   int d, h, m;
 
@@ -2009,7 +2009,7 @@ static void list_llog_entries(struct char_data *ch)
 {
   FILE *fp;
   struct last_entry llast;
-  char timestr[25];
+  char timestr[MAX_TIMESTR_LENGTH];
 
   if(!(fp=fopen(LAST_FILE,"r"))) {
     log("llist_log_entries: could not open last log file %s.", LAST_FILE);
@@ -4525,8 +4525,9 @@ ACMD(do_changelog)
 
 ACMD(do_plist)
 {
-  int i, len = 0, count = 0;
-  char mode, buf[MAX_STRING_LENGTH * 20], name_search[MAX_NAME_LENGTH], timestr[MAX_STRING_LENGTH];
+  int i, count = 0;
+  char mode, buf[MAX_INPUT_LENGTH], name_search[MAX_NAME_LENGTH], timestr[MAX_TIMESTR_LENGTH];
+  sds outbuf;
   struct time_info_data time_away;
   int low = 0, high = LVL_IMPL, low_day = 0, high_day = 10000, low_hr = 0, high_hr = 24;
 
@@ -4580,8 +4581,7 @@ ACMD(do_plist)
     }
   }
 
-  len = 0;
-  len += snprintf(buf + len, sizeof(buf) - len, "\tW[ Id] (Lv) Name         Last\tn\r\n"
+  outbuf = sdscatfmt(sdsempty(), "\tW[ Id] (Lv) Name         Last\tn\r\n"
                   "%s-------------------------------------%s\r\n", CCCYN(ch, C_NRM),
                   CCNRM(ch, C_NRM));
 
@@ -4601,14 +4601,15 @@ ACMD(do_plist)
 
     strftime(timestr, sizeof(timestr), "%c", localtime(&player_table[i].last));
 
-    len += snprintf(buf + len, sizeof(buf) - len, "[%3ld] (%2d) %c%-15s %s\r\n",
+    outbuf = sdscatprintf(outbuf, "[%3ld] (%2d) %c%-15s %s\r\n",
                     player_table[i].id, player_table[i].level,
                     UPPER(*player_table[i].name), player_table[i].name + 1, timestr);
     count++;
   }
-  snprintf(buf + len, sizeof(buf) - len, "%s-------------------------------------%s\r\n"
+  outbuf = sdscatprintf(outbuf, "%s-------------------------------------%s\r\n"
            "%d players listed.\r\n", CCCYN(ch, C_NRM), CCNRM(ch, C_NRM), count);
-  page_string(ch->desc, buf, TRUE);
+  page_string(ch->desc, outbuf, TRUE);
+  sdsfree(outbuf);
 }
 
 ACMD(do_wizupdate)
@@ -4998,7 +4999,7 @@ void free_recent_players(void)
 ACMD(do_recent)
 {
   time_t ct;
-  char timestr[MAX_INPUT_LENGTH], arg[MAX_INPUT_LENGTH];
+  char timestr[MAX_TIMESTR_LENGTH], arg[MAX_INPUT_LENGTH];
   int hits = 0, limit = 0, count = 0;
   struct recent_player *this;
   bool loc;
