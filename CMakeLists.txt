@@ -236,16 +236,6 @@ endif()
 
 
 # ========== network libs ==========
-check_function_exists(gethostbyaddr HAVE_GETHOSTBYADDR)
-if (NOT HAVE_GETHOSTBYADDR)
-    message(STATUS "gethostbyaddr() not available, trying nsllib")
-    find_library(NSL_LIBRARY nsl)
-    if (NSL_LIBRARY)
-        message(STATUS "...nsllib found.")
-        list(APPEND EXTRA_LIBS ${NSL_LIBRARY})
-    endif()
-endif()
-
 check_function_exists(socket HAVE_SOCKET)
 if (NOT HAVE_SOCKET)
     message(STATUS "socket() not available, trying socketlib")
@@ -326,24 +316,17 @@ set(PROTO_FUNCTIONS
         fscanf
         fseek
         fwrite
-        getpeername
         getpid
         getrlimit
-        getsockname
         htonl
         htons
-        inet_addr
-        inet_aton
-        inet_ntoa
         listen
-        ntohl
         perror
         printf
         qsort
         read
         remove
         rewind
-        select
         setitimer
         setrlimit
         setsockopt
