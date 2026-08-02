@@ -276,7 +276,7 @@ struct in_addr {
 #   define PATH_MAX MAX_PATH
 # endif
 
-# if !defined(__BORLANDC__) && !defined(LCC_WIN32)	/* MSVC */
+# if !defined(__BORLANDC__) && !defined(LCC_WIN32) && defined(NO_OLDNAMES)	/* MSVC */
 #  define chdir _chdir
 #  pragma warning(disable:4761)		/* Integral size mismatch. */
 #  pragma warning(disable:4244)		/* Possible loss of data. */

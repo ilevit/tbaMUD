@@ -103,6 +103,10 @@ unsigned long circle_random(void);
 #undef MIN
 #endif
 
+#ifndef HAVE_STRLCPY
+size_t strlcpy(char *dest, const char *source, size_t totalsize);
+#endif
+
 int MAX(int a, int b);
 int MIN(int a, int b);
 char *CAP(char *txt);
